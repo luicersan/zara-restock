@@ -14,5 +14,14 @@
   "devDependencies": {
     "wrangler": "^4",
     "vitest": "^3"
+  },
+  "dependencies": {
+    "puppeteer": "^25"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "puppeteer@25.3.0": true,
+    "sharp@0.34.5": true,
+    "workerd@1.20260721.1": true
   }
 }
