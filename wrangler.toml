@@ -14,7 +14,7 @@ crons = ["*/2 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "zara-restock"
-database_id = "PEGAR_AQUI_EL_ID"
+database_id = "b6841186-9931-4b11-a565-771c5546e8b0"
 
 # RESEND_API_KEY NO va aqui. Es un secret:
 #   npx wrangler secret put RESEND_API_KEY
