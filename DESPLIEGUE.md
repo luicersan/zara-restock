@@ -83,19 +83,63 @@ sea un navegador real ejecutando JavaScript (`ZARA-API.md`), así que el Worker
 nunca podrá consultar la disponibilidad por sí mismo.
 
 ```bash
-node check-local.js
+WORKER_URL=https://tu-worker.workers.dev node check-local.js
 ```
 
-Deja el proceso corriendo (hace su propia ronda cada 120 segundos; no hace
-falta cron del sistema, aunque también se puede programar con el Programador
-de tareas de Windows si prefieres que arranque solo). Necesita:
+Necesita un proceso corriendo sin parar (hace su propia ronda cada 120
+segundos internamente; no hace falta cron del sistema para eso). Como tiene
+que estar encendido todo el rato, hay dos formas de tenerlo funcionando:
 
-- Node instalado (ya lo tienes de la puesta en marcha del Worker).
-- La URL pública del Worker, para saber a qué API llamar (`GET /api/items`,
-  `POST /api/check-results`).
+**Opción A — tu propio ordenador.** Lo más simple, con la contrapartida de
+que las comprobaciones se paran mientras el ordenador esté apagado. Deja una
+terminal abierta con el comando de arriba, o prográmalo con el Programador de
+tareas de Windows para que arranque solo al iniciar sesión.
 
-Requiere el ordenador encendido para que las comprobaciones sigan corriendo.
-Es la contrapartida aceptada (`SPEC.md` §7.3).
+**Opción B — una VM gratuita que esté siempre encendida** (recomendado si no
+quieres depender de tu ordenador). Con **Oracle Cloud "Always Free"** (gratis
+sin límite de tiempo, a diferencia de AWS/GCP que solo dan 12 meses):
+
+1. Crea una instancia Ampere (`VM.Standard.A1.Flex`, marcada como "Always Free
+   eligible") con imagen Ubuntu, y conéctate por SSH.
+2. Instala Node.js LTS y las librerías que Chromium necesita para arrancar en
+   Linux:
+
+   ```bash
+   curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+   sudo apt-get install -y nodejs \
+     ca-certificates fonts-liberation libasound2t64 libatk-bridge2.0-0 \
+     libatk1.0-0 libcairo2 libcups2 libdbus-1-3 libexpat1 libgbm1 \
+     libglib2.0-0 libgtk-3-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 \
+     libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 \
+     xdg-utils
+   ```
+
+   (Si al arrancar `check-local.js` Chromium se queja de alguna librería que
+   falta, el propio mensaje de error dice cuál — se instala con `apt-get` y
+   listo; los nombres exactos varían algo entre versiones de Ubuntu.)
+
+3. Copia el proyecto entero a la VM (con `git clone` si le has puesto un
+   remoto, o `scp -r`) y ejecuta `npm install` ahí también, para que se
+   descargue Puppeteer con su Chromium.
+4. Copia `check-local.service` a `/etc/systemd/system/check-local.service`.
+   Revisa dentro `User`, `WorkingDirectory` y `WORKER_URL` si no coinciden con
+   tu VM.
+5. Actívalo:
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now check-local
+   sudo systemctl status check-local     # debe decir "active (running)"
+   journalctl -u check-local -f          # logs en vivo
+   ```
+
+`Restart=always` en el servicio hace que se reinicie solo si se cae, y
+`WantedBy=multi-user.target` que arranque solo si reinicias la VM.
+
+Sea cual sea la opción, si el proceso deja de correr los artículos se quedan
+congelados en su último estado conocido (no se generan errores ni correos
+falsos): es la contrapartida de que Zara bloquee cualquier petición que no
+sea un navegador real (`SPEC.md` §7.3).
 
 ## Comprobar que funciona
 

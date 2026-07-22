@@ -50,8 +50,10 @@ Si dudas entre dos soluciones, elige la que tenga menos ficheros.
 ├── package.json
 ├── schema.sql
 ├── seed.sql
-├── check-local.js     corre en el ordenador, no se despliega al Worker. Único
-│                      que importa zara-fetch.js
+├── check-local.js     corre fuera del Worker (ordenador o VM). Único que
+│                      importa zara-fetch.js
+├── check-local.service unidad systemd opcional para dejarlo corriendo en una
+│                      VM siempre encendida (DESPLIEGUE.md)
 ├── src/
 │   ├── index.js       fetch() + enrutado. Sin scheduled(): el cron vive en
 │   │                  check-local.js (SPEC.md §7.3)
