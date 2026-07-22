@@ -68,6 +68,18 @@ No ha hecho falta nada más (ni cookies previas, ni Referer) porque es
 Puppeteer quien resuelve el challenge de Akamai al ejecutar el JS de la
 página, no las cabeceras.
 
+## Nota de implementación (paso 4): fetchProduct() vive en su propio fichero
+
+`fetchProduct()` está en `src/zara-fetch.js`, no en `src/zara.js`. Puppeteer
+importa módulos nativos de Node (`fs`, `crypto`, `child_process`...) que el
+bundler de Workers no puede empaquetar. Comprobado con `wrangler dev`:
+`src/index.js` importaba `normalize()`/`parseUrl()` desde el mismo fichero
+que `fetchProduct()`, y el build fallaba con 17 errores de módulos de Node
+no resueltos, aunque `index.js` nunca llama a `fetchProduct()`. La solución
+fue separar: `src/zara.js` sin dependencias (lo usa el Worker), y
+`src/zara-fetch.js` con Puppeteer (solo lo usa `check-local.js`). Ver
+`CLAUDE.md`.
+
 ## Estructura del JSON (recortada, datos reales)
 
 ```json

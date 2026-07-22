@@ -51,11 +51,12 @@ Si dudas entre dos soluciones, elige la que tenga menos ficheros.
 ├── schema.sql
 ├── seed.sql
 ├── check-local.js     corre en el ordenador, no se despliega al Worker. Único
-│                      que importa puppeteer y llama a fetchProduct()
+│                      que importa zara-fetch.js
 ├── src/
 │   ├── index.js       fetch() + enrutado. Sin scheduled(): el cron vive en
 │   │                  check-local.js (SPEC.md §7.3)
-│   ├── zara.js        fetchProduct(), parseUrl() y normalize(). AISLADO.
+│   ├── zara.js        parseUrl() y normalize(). Sin dependencias.
+│   ├── zara-fetch.js  fetchProduct(), con Puppeteer. AISLADO.
 │   ├── check.js       lógica de comprobación y decisión de notificar
 │   ├── mail.js        sendRestockEmail()
 │   └── ui.js          devuelve la cadena HTML de la interfaz
@@ -63,12 +64,20 @@ Si dudas entre dos soluciones, elige la que tenga menos ficheros.
     └── zara.test.js
 ```
 
-`src/zara.js` es el único fichero que sabe cómo funciona Zara por dentro. Nada
-fuera de él conoce rutas, cabeceras ni formatos de respuesta. `fetchProduct()`
-usa Puppeteer y solo se ejecuta desde `check-local.js` (nunca dentro del
-Worker, que no puede lanzar un navegador); `parseUrl()` y `normalize()` sí las
-usa también el Worker, así que no pueden depender de Puppeteer ni de nada que
-no corra en el runtime de Workers.
+`src/zara.js` + `src/zara-fetch.js` son los únicos ficheros que saben cómo
+funciona Zara por dentro. Nada fuera de ellos conoce rutas, cabeceras ni
+formatos de respuesta. Están separados en dos ficheros por una razón muy
+concreta, comprobada con `wrangler dev` al construir el paso 4: `fetchProduct()`
+usa Puppeteer, y Puppeteer importa módulos nativos de Node (`fs`, `crypto`,
+`child_process`...) que el bundler de Workers no puede empaquetar. Si
+`fetchProduct()` viviera en el mismo fichero que `parseUrl()`/`normalize()`,
+el Worker fallaría al compilar en cuanto `index.js` importase cualquier cosa
+de ese fichero, aunque nunca llamase a `fetchProduct()`. Por eso:
+
+- `src/zara.js`: sin dependencias. Lo importan tanto el Worker como
+  `check-local.js`.
+- `src/zara-fetch.js`: importa `puppeteer`. Solo lo importa `check-local.js`,
+  nunca `src/index.js` ni nada que llegue al Worker.
 
 ## Orden de construcción
 
@@ -80,9 +89,9 @@ puede fracasar, y todo lo demás es trivial en comparación.
    de Akamai pase lo que pase (no solo por IP de datacenter); solo un
    navegador real (Puppeteer headless probado y confirmado) consigue la
    página. Ver `ZARA-API.md` y `SPEC.md` §7.
-2. `src/zara.js` + `test/zara.test.js`, con los tests en verde. `fetchProduct()`
-   usa Puppeteer; `parseUrl()` y `normalize()` no dependen de él (los usa
-   también el Worker).
+2. `src/zara.js` (`parseUrl`, `normalize`) + `src/zara-fetch.js`
+   (`fetchProduct()`, con Puppeteer) + `test/zara.test.js`, con los tests en
+   verde. Separados en dos ficheros: ver la nota de la Estructura más arriba.
 3. `schema.sql` aplicado a D1 en local y en remoto.
 4. `src/index.js` con la API (incluido `POST /api/check-results`, `SPEC.md`
    §4.1) y `src/ui.js` con la interfaz. Prueba con `wrangler dev`. Sin
@@ -143,5 +152,6 @@ npx wrangler tail                            # logs en vivo del Worker desplegad
 ## Cuando algo se rompa
 
 Si la comprobación deja de funcionar, el sitio por donde empezar es siempre
-`ZARA-API.md` y `src/zara.js`. Zara habrá cambiado algo. El resto de la aplicación
+`ZARA-API.md` y `src/zara-fetch.js` (o `src/zara.js` si es un problema de
+parseo de URL/tallas). Zara habrá cambiado algo. El resto de la aplicación
 no se toca.
