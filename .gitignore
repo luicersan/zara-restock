@@ -1,0 +1,3 @@
+node_modules/
+resend_apikey.txt
+.wrangler/
