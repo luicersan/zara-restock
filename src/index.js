@@ -4,6 +4,8 @@
 
 import { renderUI } from "./ui.js";
 import { normalize, parseUrl } from "./zara.js";
+import { decidirNotificacion } from "./check.js";
+import { sendRestockEmail } from "./mail.js";
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -120,9 +122,10 @@ async function handleRequestCheck(env) {
   return jsonResponse({ ok: true });
 }
 
-// Persiste los resultados crudos que envía check-local.js. De momento solo
-// actualiza el estado (paso 4); la decisión de notificar y el envío de
-// correo se añaden en el paso 6, cuando existan check.js y mail.js.
+// Persiste los resultados crudos que envía check-local.js: decide si hay que
+// avisar (solo transición agotado → disponible, SPEC.md §3.4) y envía el
+// correo antes de dar la comprobación por buena. Un error de Zara nunca toca
+// `available`, solo `last_error`/`last_checked_at` (CLAUDE.md).
 async function handleCheckResults(request, env) {
   const body = await request.json();
   const results = Array.isArray(body.results) ? body.results : [];
@@ -138,12 +141,37 @@ async function handleCheckResults(request, env) {
       continue;
     }
 
+    const item = await env.DB.prepare("SELECT url, size, name, available FROM items WHERE id = ?")
+      .bind(result.itemId)
+      .first();
+    if (!item) continue; // el artículo se borró mientras se comprobaba
+
+    const nombre = result.name ?? item.name;
+    const disponibleAntes = !!item.available;
+    const disponibleAhora = !!result.available;
+
+    if (decidirNotificacion(disponibleAntes, disponibleAhora)) {
+      const email = await getSetting(env, "notification_email");
+      if (email) {
+        try {
+          await sendRestockEmail({ to: email, name: nombre, size: item.size, url: item.url }, env);
+        } catch (err) {
+          // Si falla el envío, no se marca available como actualizado: el
+          // siguiente ciclo debe reintentar la notificación (SPEC.md §3.4).
+          await env.DB.prepare("UPDATE items SET last_error = ? WHERE id = ?")
+            .bind(`No se pudo enviar el correo: ${err.message}`, result.itemId)
+            .run();
+          continue;
+        }
+      }
+    }
+
     await env.DB.prepare(
       `UPDATE items
        SET available = ?, last_checked_at = ?, last_error = NULL, name = COALESCE(?, name)
        WHERE id = ?`
     )
-      .bind(result.available ? 1 : 0, now, result.name ?? null, result.itemId)
+      .bind(disponibleAhora ? 1 : 0, now, result.name ?? null, result.itemId)
       .run();
   }
 

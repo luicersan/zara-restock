@@ -53,6 +53,14 @@ Desarrollo local:
 npm run dev     # http://localhost:8787
 ```
 
+Para probar el envío de correo en local (`wrangler dev` no lee secrets de
+producción), crea un `.dev.vars` en la raíz del proyecto —**nunca se comitea**,
+ya está en `.gitignore`— con:
+
+```
+RESEND_API_KEY=re_...
+```
+
 Desplegar:
 
 ```bash
