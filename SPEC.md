@@ -40,20 +40,28 @@ Fuera (no se implementa, no se deja "preparado", no se abstrae por si acaso):
 Entrada: URL completa del artículo (tal cual se copia desde la web o la app de
 Zara, con sus parámetros `utm_*`) y una talla escrita a mano.
 
-Al dar de alta, **de forma síncrona**:
+**No hay consulta síncrona a Zara en el alta** (§7 explica por qué: Zara solo
+se puede consultar desde el script local, no desde el Worker). Al dar de alta:
 
-1. Se extrae de la URL el identificador de producto y el de variante (§5).
-2. Se consulta la disponibilidad del producto.
-3. Si la talla indicada no existe entre las tallas del producto, se rechaza el
-   alta con un mensaje que incluye la lista de tallas que sí existen.
-4. Si existe, se guarda el artículo junto con el nombre del producto y su
-   disponibilidad **real en ese momento**.
+1. Se extrae de la URL el identificador de producto y el de variante (§5). Si
+   no se puede extraer el `product_id`, se rechaza el alta (esto sí es
+   validación local, sin red).
+2. Se guarda el artículo con `available = 0` y `last_checked_at = NULL`. Sin
+   `last_checked_at`, el artículo se muestra como **`Pendiente`** en el
+   listado (§3.2): no se sabe todavía si la talla existe ni si está
+   disponible.
+3. La primera comprobación real la hace el script local en su siguiente
+   ronda (hasta 120 segundos después). Si la talla no existe entre las
+   tallas del producto, esa ronda deja el artículo en estado `Error` con un
+   mensaje que incluye la lista de tallas que sí existen — igual que
+   cualquier otro error de comprobación (§3.4). No se borra solo: el usuario
+   lo borra a mano al ver el error.
 
-El punto 4 importa: si se da de alta un artículo que ya está disponible, se guarda
-como disponible y **no** se envía correo. Solo se notifican transiciones reales.
-
-Si la consulta a Zara falla en el alta, el alta falla y se muestra el error. No se
-guardan artículos que no se han podido verificar.
+Esto es una relajación consciente de "no se guardan artículos que no se han
+podido verificar": ahora sí se guardan, y la verificación llega poco después,
+asíncrona. La alternativa (bloquear el alta hasta la siguiente ronda del
+script local) complicaría la interfaz sin aportar nada para dos personas
+vigilando seis artículos.
 
 ### 3.2 Listado
 
@@ -61,11 +69,14 @@ Tabla con una fila por artículo:
 
 | Campo | Contenido |
 |---|---|
-| Artículo | Nombre del producto, enlazando a la URL original |
+| Artículo | Nombre del producto, enlazando a la URL original (mientras esté `Pendiente` y no se conozca el nombre, se muestra la URL) |
 | Talla | La talla vigilada |
-| Estado | `Disponible` / `Agotado` / `Error` |
-| Última comprobación | Fecha y hora, en horario de Madrid |
+| Estado | `Disponible` / `Agotado` / `Pendiente` / `Error` |
+| Última comprobación | Fecha y hora, en horario de Madrid. Vacío si sigue `Pendiente` |
 | — | Botón de borrar |
+
+`Pendiente`: `last_checked_at` es `NULL`, es decir, el artículo se acaba de dar
+de alta y el script local todavía no ha hecho su primera ronda (§3.1).
 
 Si el último intento falló, el estado es `Error` y se muestra el mensaje. Esto es
 el único diagnóstico de la aplicación: si Zara cambia algo y las comprobaciones
@@ -82,10 +93,29 @@ no hay dirección configurada.
 
 ### 3.4 Comprobación periódica
 
-Cada **120 segundos** (`*/2 * * * *`) se recorren todos los artículos, en serie,
-y se actualiza su estado.
+**No es un cron del Worker.** Por lo explicado en §7, la comprobación real
+contra Zara la hace un proceso en un ordenador (`check-local.js`), no el
+Worker. El Worker no pierde su papel de decidir y notificar: solo deja de ser
+quien habla con Zara.
 
-Reglas:
+Cada **120 segundos**, `check-local.js`:
+
+1. Pide a la API del Worker (`GET /api/items`) la lista de artículos vigilados.
+2. Para cada uno, en serie, consulta su disponibilidad real en Zara (vía
+   Puppeteer headless, §7).
+3. Envía el resultado de cada artículo (disponibilidad cruda y, si ha
+   fallado, el error) al Worker (`POST /api/check-results`, §4.1).
+
+El Worker, al recibir cada resultado:
+
+- Decide si hay transición agotado → disponible y actualiza `available` y
+  `last_checked_at`.
+- Si la talla no existe en la respuesta de Zara, dado que no se validó al dar
+  de alta (§3.1), guarda el error correspondiente con la lista de tallas
+  válidas.
+- Envía el correo si corresponde (§3.5).
+
+Reglas (se mantienen igual, solo cambia quién habla con Zara):
 
 - Se considera **disponible** si el estado del SKU de esa talla es `in_stock` o
   `low_on_stock`. Cualquier otro valor (`out_of_stock`, `coming_soon`,
@@ -93,12 +123,18 @@ Reglas:
 - Se envía correo **solo en la transición agotado → disponible**. Si sigue
   disponible en las siguientes rondas, no se repite el correo. Si vuelve a
   agotarse y se repone otra vez, se avisa de nuevo.
-- Un fallo de red o un error de Zara **no cambia** el estado de disponibilidad:
-  se registra en `last_error` y se reintenta a los 120 segundos. Un 503 puntual
-  no debe provocar un correo espurio ni borrar el estado conocido.
+- Un fallo de red o un error de Zara (incluido el propio `check-local.js`, p.
+  ej. si Puppeteer no consigue cargar la página) **no cambia** el estado de
+  disponibilidad: se registra en `last_error` y se reintenta a los 120
+  segundos. Un 503 puntual no debe provocar un correo espurio ni borrar el
+  estado conocido.
 - Un error en un artículo no interrumpe el recorrido de los demás.
 - Si el envío del correo falla, el estado `available` **no** se marca como
   actualizado, para que el siguiente ciclo reintente la notificación.
+
+Requiere que el ordenador con `check-local.js` esté encendido. Es la
+contrapartida de que Zara bloquee las peticiones sin navegador real (§7,
+`ZARA-API.md`).
 
 ### 3.5 Correo
 
@@ -111,15 +147,26 @@ Un correo por artículo repuesto.
 
 ## 4. Arquitectura
 
-Un único Cloudflare Worker que sirve la interfaz, la API y ejecuta el cron.
+Un único Cloudflare Worker que sirve la interfaz y la API, más un script de
+Node (`check-local.js`) en un ordenador que es el único que habla con Zara.
 
 ```
 Navegador ──► Worker ──► D1 (SQLite)
+                 ▲
+                 │ GET /api/items, POST /api/check-results
                  │
-Cron */2min ─────┼──► fetch zara.com
+check-local.js (cada 120s) ──► Puppeteer headless ──► zara.com
                  │
+                 (el Worker, no check-local.js, habla con:)
                  └──► Resend API ──► correo
 ```
+
+Zara bloquea con un challenge de Akamai cualquier petición que no venga de un
+navegador real ejecutando JavaScript (`ZARA-API.md`); un Worker no puede
+lanzar un navegador. Por eso la consulta se hace desde un ordenador con
+`check-local.js` y no desde el propio Worker. El Worker sigue siendo el único
+que decide si hay que notificar y el único que envía correo (mantiene
+`RESEND_API_KEY`, que `check-local.js` no necesita ni ve).
 
 - **Sin build de frontend.** La interfaz es una cadena HTML devuelta por el Worker,
   con JavaScript vanilla en un `<script>` en línea. Sin React, sin Tailwind,
@@ -133,15 +180,18 @@ Cron */2min ─────┼──► fetch zara.com
 | Método | Ruta | Descripción |
 |---|---|---|
 | GET | `/` | La interfaz |
-| GET | `/api/items` | Lista de artículos |
-| POST | `/api/items` | Alta. Cuerpo: `{ url, size }` |
+| GET | `/api/items` | Lista de artículos. La usan tanto la interfaz como `check-local.js` |
+| POST | `/api/items` | Alta. Cuerpo: `{ url, size }`. Guarda en `Pendiente`, sin consultar Zara (§3.1) |
 | DELETE | `/api/items/:id` | Borrado |
 | GET | `/api/settings` | `{ email }` |
 | PUT | `/api/settings` | Cuerpo: `{ email }` |
-| POST | `/api/check` | Dispara una comprobación manual de todos los artículos |
+| POST | `/api/check` | Marca una señal (`check_requested` en `settings`) para que `check-local.js` haga una ronda en cuanto la vea, sin esperar a completar los 120s en curso |
+| POST | `/api/check-results` | Usado por `check-local.js`. Cuerpo: lista de resultados crudos por artículo (disponibilidad o error). El Worker aplica aquí la lógica de transición y el envío de correo |
 
-`POST /api/check` existe para depurar sin esperar al cron y para poder forzar una
-comprobación desde la interfaz. Ejecuta exactamente el mismo código que el cron.
+`POST /api/check` **no** ejecuta una comprobación inmediata (el Worker no
+puede consultar Zara). Es una señal para `check-local.js`, que la revisa en
+cada vuelta de su bucle; la comprobación real llega en cuanto ese proceso la
+atiende, no al instante.
 
 ## 5. Formato de las URL de Zara
 
@@ -190,53 +240,46 @@ export async function fetchProduct(productId, variantId)
 Todo lo demás de la aplicación consume esta función y no sabe nada de cómo
 funciona Zara por dentro. Si Zara cambia su web, se toca este fichero y ninguno más.
 
-### 7.1 Paso 0: descubrimiento (antes de escribir nada de la aplicación)
+**Confirmado en el paso 0 (`ZARA-API.md`): Zara bloquea con un challenge de
+Akamai cualquier petición que no sea un navegador real ejecutando JavaScript.**
+`curl`/`fetch` nunca lo pasan, ni siquiera desde una IP residencial normal —no
+solo desde IPs de centro de datos, que era la única hipótesis contemplada
+aquí originalmente. Un Cloudflare Worker no puede lanzar un navegador, así
+que **`fetchProduct()` no puede ejecutarse dentro del Worker**. Vive en
+`check-local.js` (un script de Node que sí puede lanzar Chromium headless vía
+Puppeteer) y usa el mismo `src/zara.js` para todo lo que no depende del
+entorno (parseo de URL, normalización de tallas). Ver §4 y §3.4.
 
-Ninguna ruta concreta está confirmada en este documento a propósito, porque cambian
-con el tiempo y una ruta inventada cuesta más que no tener ninguna. **Lo primero es
-averiguar la buena, y documentarla en `ZARA-API.md`.**
+### 7.1 Paso 0: descubrimiento (antes de escribir nada de la aplicación) — hecho
 
-Vía rápida y fiable, con el propietario delante:
-
-1. Abrir en Chrome una de las URLs de `seed.sql`.
-2. DevTools → pestaña Network → filtro XHR/Fetch.
-3. Recargar y localizar la respuesta JSON que contiene las tallas y su estado
-   (buscar en las respuestas por `in_stock`, `out_of_stock` o por una talla
-   conocida como `"37"`).
-4. Botón derecho sobre esa petición → *Copy as cURL*.
-
-Vías a probar con `curl` desde la terminal, en este orden:
-
-1. **GET de la propia ficha de producto** y extracción del JSON embebido en el
-   HTML. Suele ser lo más estable: si la página se ve en el navegador, el dato
-   está ahí.
-2. **Endpoints internos bajo `https://www.zara.com/itxrest/...`**, que es la
-   familia de servicios que usa la propia web. Requieren un identificador de
-   tienda además del de producto; el valor correcto para `es/es` sale del paso
-   de DevTools.
-
-En cualquier caso, enviar cabeceras de navegador real: `User-Agent` de Chrome,
-`Accept-Language: es-ES,es;q=0.9`, `Accept: application/json` (o `text/html`).
+Ninguna ruta concreta estaba confirmada en este documento a propósito, porque
+cambian con el tiempo y una ruta inventada cuesta más que no tener ninguna.
+Resultado documentado en `ZARA-API.md`: no hay endpoint JSON por separado —
+los datos van embebidos en el HTML de la ficha de producto, en
+`window.zara.viewPayload`— y hace falta un navegador real (headless vale) para
+conseguir ese HTML.
 
 ### 7.2 Registrar los hallazgos
 
-`ZARA-API.md` debe contener: la URL exacta que funciona, las cabeceras necesarias,
-un ejemplo recortado de la respuesta, y de qué campos se sacan el nombre, la
-etiqueta de talla y el estado. Sin esto, el día que se rompa hay que repetir toda
-la investigación desde cero.
+`ZARA-API.md` contiene: el método que funciona (Puppeteer headless + extraer
+el JSON embebido), un ejemplo recortado de la respuesta, y de qué campos se
+sacan el nombre, la etiqueta de talla y el estado. Sin esto, el día que se
+rompa hay que repetir toda la investigación desde cero.
 
-### 7.3 Si Cloudflare está bloqueado
+### 7.3 Consulta desde un ordenador, no desde el Worker
 
-Inditex sirve detrás de Akamai y puede rechazar peticiones desde IPs de centro de
-datos. Si `curl` funciona desde el ordenador de casa pero el Worker desplegado
-recibe 403, **la aplicación no cambia**: se mueve solo el fetch.
+Esto ya no es un plan de contingencia ("si Cloudflare está bloqueado"): es la
+arquitectura desde el principio, porque el bloqueo de Akamai no depende de si
+la IP es de datacenter o residencial, sino de si quien pregunta ejecuta
+JavaScript de verdad (§7, `ZARA-API.md`).
 
-Plan B, documentado en `DESPLIEGUE.md`: una tarea programada en el ordenador local
-que ejecuta `node check-local.js`, el cual usa el mismo `src/zara.js` y envía los
-resultados a un endpoint del Worker. Se desactiva el cron de Cloudflare y el resto
-sigue igual.
+Documentado en `DESPLIEGUE.md`: una tarea programada (o un proceso de larga
+duración) en el ordenador local ejecuta `check-local.js`, que usa `src/zara.js`
+y Puppeteer, y envía los resultados a `POST /api/check-results` del Worker
+(§4.1). El Worker no tiene `[triggers]` de cron para esto: la periodicidad la
+marca `check-local.js`.
 
-No implementar el plan B por adelantado. Solo si hace falta.
+Requiere el ordenador encendido. Es la contrapartida aceptada.
 
 ## 8. Modelo de datos
 
@@ -283,14 +326,18 @@ No se testea la llamada real a Zara ni el envío de correo. Se comprueban a mano
 ## 10. Criterio de terminado
 
 1. `wrangler deploy` sin errores y la interfaz carga en la URL `workers.dev`.
-2. Los 5 artículos de `seed.sql` aparecen en la tabla con su estado real y su hora
-   de comprobación.
-3. Añadir una talla inexistente devuelve error con la lista de tallas válidas.
+2. `check-local.js` corriendo en el ordenador: los 5 artículos de `seed.sql`
+   pasan de `Pendiente` a su estado real, con su hora de comprobación, en la
+   siguiente ronda.
+3. Añadir una talla inexistente se guarda como `Pendiente` y pasa a `Error`
+   con la lista de tallas válidas en la siguiente ronda de `check-local.js`
+   (hasta 120 segundos, no al instante — §3.1).
 4. Borrar funciona.
 5. Guardar el correo funciona y persiste al recargar.
 6. Prueba de correo de extremo a extremo: se añade a mano un artículo **que esté
    disponible ahora mismo**, se le fuerza `available = 0` en la base de datos
-   (`wrangler d1 execute`), se llama a `/api/check` y llega el correo.
+   (`wrangler d1 execute`), se llama a `POST /api/check` (o simplemente se
+   espera a la siguiente ronda de `check-local.js`) y llega el correo.
 
 El punto 6 es el que de verdad valida la aplicación. Esperar a que Zara reponga
 algo para descubrir que el correo no salía no es un plan de pruebas.
@@ -299,11 +346,14 @@ algo para descubrir que el correo no salía no es un plan de pruebas.
 
 | Decisión | Motivo |
 |---|---|
-| Cloudflare Workers | Cron gratuito con granularidad de 1 minuto; no se duerme por inactividad |
+| Cloudflare Workers | Sirve interfaz y API gratis, sin servidor que administrar; no se duerme por inactividad |
 | D1 | SQLite gestionado, gratis, sin servidor que administrar |
 | Sin build de frontend | Es lo que permite tenerlo desplegado en una hora |
 | Intervalo de 120 s | ~4.300 peticiones/día con 6 artículos: suficientemente rápido sin llamar la atención |
 | Sin autenticación | Decisión del propietario; no hay datos sensibles |
 | Resend | Única API HTTP de correo con alta instantánea; los Workers no pueden hablar SMTP |
 | Cuenta de Resend a nombre de la destinataria | Sin dominio verificado, Resend solo envía a la dirección de la cuenta |
+| Consulta a Zara desde `check-local.js` (Puppeteer), no desde el Worker | Confirmado en el paso 0 (`ZARA-API.md`): Zara bloquea con un challenge de Akamai cualquier petición sin navegador real ejecutando JS; un Worker no puede lanzar uno. Puppeteer headless sí lo pasa (probado 4/4) |
+| Alta de artículo asíncrona (`Pendiente` → verificado en la siguiente ronda) | Consecuencia directa de la anterior: el Worker no puede validar la talla al momento porque no puede consultar Zara |
+| `POST /api/check` marca una señal en vez de comprobar al instante | Misma razón: la comprobación real solo la puede hacer `check-local.js`, no el Worker que atiende la petición |
 | Tallas como cadenas, sin tipos | Elimina toda la lógica de rangos de tallas sin perder funcionalidad |

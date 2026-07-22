@@ -60,24 +60,52 @@ npx wrangler deploy
 ```
 
 La primera vez pedirá elegir un subdominio `workers.dev`. Al terminar imprime la
-URL pública. El cron queda activo automáticamente por el `[triggers]` del
-`wrangler.toml`.
+URL pública. **El Worker no tiene cron propio** (`SPEC.md` §7.3): quien habla
+con Zara es `check-local.js`, en tu ordenador, no el Worker desplegado.
 
 Último paso: abrir la URL, guardar el correo de notificación y dar de alta los
-cinco artículos desde la interfaz.
+cinco artículos desde la interfaz (quedan en estado `Pendiente` hasta la
+primera ronda de `check-local.js`, `SPEC.md` §3.1).
+
+## Poner en marcha `check-local.js`
+
+Esto no es opcional ni es un plan B: es la única forma de que la aplicación
+funcione. Zara bloquea con un challenge de Akamai cualquier petición que no
+sea un navegador real ejecutando JavaScript (`ZARA-API.md`), así que el Worker
+nunca podrá consultar la disponibilidad por sí mismo.
+
+```bash
+node check-local.js
+```
+
+Deja el proceso corriendo (hace su propia ronda cada 120 segundos; no hace
+falta cron del sistema, aunque también se puede programar con el Programador
+de tareas de Windows si prefieres que arranque solo). Necesita:
+
+- Node instalado (ya lo tienes de la puesta en marcha del Worker).
+- La URL pública del Worker, para saber a qué API llamar (`GET /api/items`,
+  `POST /api/check-results`).
+
+Requiere el ordenador encendido para que las comprobaciones sigan corriendo.
+Es la contrapartida aceptada (`SPEC.md` §7.3).
 
 ## Comprobar que funciona
 
 ```bash
-npx wrangler tail       # logs en vivo, incluidas las ejecuciones del cron
+npx wrangler tail       # logs en vivo del Worker (altas, borrados, resultados recibidos)
 ```
 
-Para forzar una comprobación sin esperar: botón "Comprobar ahora" de la interfaz,
-o `curl -X POST https://TU-URL/api/check`.
+Con `check-local.js` corriendo en otra terminal, mira su salida para ver las
+rondas de comprobación.
+
+Para forzar una comprobación sin esperar hasta 120s: botón "Comprobar ahora" de
+la interfaz, o `curl -X POST https://TU-URL/api/check`. Esto solo marca una
+señal; `check-local.js` la recoge en su siguiente vuelta, no es instantáneo
+(`SPEC.md` §4.1).
 
 Prueba del correo de extremo a extremo, según `SPEC.md` §10.6: añade un artículo
 que esté disponible ahora mismo, fuérzalo a agotado en la base de datos y dispara
-una comprobación.
+una comprobación (con `check-local.js` corriendo).
 
 ```bash
 npx wrangler d1 execute zara-restock --remote \
@@ -109,31 +137,19 @@ allá del remitente en `src/mail.js`.
 
 Mirar la columna Estado del listado. Casos:
 
-- **Todos en `Error`** → Zara ha cambiado algo, o está bloqueando las peticiones.
-  Ver el mensaje de error. Si es 403 o 429, es bloqueo: subir el intervalo a 5
-  minutos y volver a probar. Si persiste, plan B (abajo).
+- **Todo en `Pendiente`** → `check-local.js` no está corriendo, o no consigue
+  llegar al Worker. Revisar la terminal donde corre el script.
+- **Todos en `Error`** → Zara ha cambiado algo, o el challenge de Akamai ha
+  cambiado de forma. Ver el mensaje de error en la fila y, si hace falta,
+  repetir el paso 0 (`SPEC.md` §7.1) para actualizar `ZARA-API.md`.
 - **Estados correctos pero sin correo** → problema de Resend. Revisar el panel de
   Resend (registro de envíos) y que la clave sea válida. Comprobar spam.
 - **Un solo artículo en `Error`** → el artículo probablemente ya no existe en el
-  catálogo. Borrarlo.
+  catálogo, o la talla no existe (revisar el mensaje: incluye la lista de
+  tallas válidas). Borrarlo o corregirlo.
 
 Ante un cambio de Zara, el fichero a tocar es `src/zara.js`, guiándose por
 `ZARA-API.md`. El resto de la aplicación no se toca.
-
-## Plan B: Cloudflare bloqueado por Zara
-
-Síntoma: `curl` funciona desde tu ordenador pero el Worker desplegado recibe 403
-en todos los artículos.
-
-La aplicación no cambia. Se mueve solo el fetch:
-
-1. Escribir `check-local.js`, un script de Node que importa `src/zara.js`, consulta
-   los artículos vía `GET /api/items`, comprueba disponibilidad y envía los
-   resultados a un endpoint nuevo del Worker.
-2. Programarlo con `cron` (Linux/macOS) o el Programador de tareas (Windows).
-3. Quitar el bloque `[triggers]` de `wrangler.toml` y volver a desplegar.
-
-Requiere tener el ordenador encendido. Es la contrapartida.
 
 ## Añadir otra tienda
 

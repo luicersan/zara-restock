@@ -20,8 +20,14 @@ Concretamente, no hagas nada de esto salvo que se te pida:
 - Ni sistema de plugins "por si mañana añadimos H&M".
 - Ni logging estructurado, ni métricas, ni healthchecks.
 - Ni Docker.
-- Ni dependencias de npm más allá de `wrangler` y `vitest`. El SDK de Resend
-  tampoco: es un `fetch` a una URL.
+- Ni dependencias de npm más allá de `wrangler`, `vitest` y `puppeteer`. El SDK
+  de Resend tampoco: es un `fetch` a una URL.
+
+`puppeteer` es la única excepción, y solo para `check-local.js` (ver
+`ZARA-API.md` y `SPEC.md` §7): Zara bloquea con un challenge de Akamai
+cualquier petición sin navegador real ejecutando JavaScript, confirmado en el
+paso 0. El Worker en sí **no** importa `puppeteer` ni lo necesita — sigue sin
+más dependencias que `wrangler` y `vitest`.
 
 Si dudas entre dos soluciones, elige la que tenga menos ficheros.
 
@@ -44,9 +50,12 @@ Si dudas entre dos soluciones, elige la que tenga menos ficheros.
 ├── package.json
 ├── schema.sql
 ├── seed.sql
+├── check-local.js     corre en el ordenador, no se despliega al Worker. Único
+│                      que importa puppeteer y llama a fetchProduct()
 ├── src/
-│   ├── index.js       fetch() + scheduled() + enrutado
-│   ├── zara.js        fetchProduct() y parseUrl(). AISLADO.
+│   ├── index.js       fetch() + enrutado. Sin scheduled(): el cron vive en
+│   │                  check-local.js (SPEC.md §7.3)
+│   ├── zara.js        fetchProduct(), parseUrl() y normalize(). AISLADO.
 │   ├── check.js       lógica de comprobación y decisión de notificar
 │   ├── mail.js        sendRestockEmail()
 │   └── ui.js          devuelve la cadena HTML de la interfaz
@@ -55,7 +64,11 @@ Si dudas entre dos soluciones, elige la que tenga menos ficheros.
 ```
 
 `src/zara.js` es el único fichero que sabe cómo funciona Zara por dentro. Nada
-fuera de él conoce rutas, cabeceras ni formatos de respuesta.
+fuera de él conoce rutas, cabeceras ni formatos de respuesta. `fetchProduct()`
+usa Puppeteer y solo se ejecuta desde `check-local.js` (nunca dentro del
+Worker, que no puede lanzar un navegador); `parseUrl()` y `normalize()` sí las
+usa también el Worker, así que no pueden depender de Puppeteer ni de nada que
+no corra en el runtime de Workers.
 
 ## Orden de construcción
 
@@ -63,17 +76,21 @@ No te saltes el orden. En particular, **no escribas la aplicación antes de tene
 funcionando la detección de disponibilidad**: es el único punto donde el proyecto
 puede fracasar, y todo lo demás es trivial en comparación.
 
-1. **Paso 0 — descubrimiento.** Sigue `SPEC.md` §7.1. Con `curl` desde la
-   terminal, consigue el nombre del producto y la lista de tallas con su estado
-   para `p05584397` / `v1=517756025`. Si `curl` no basta, pide al usuario que haga
-   el paso de DevTools y te pegue el resultado. **Escribe `ZARA-API.md`.**
-   No sigas al paso 1 hasta que esto funcione.
-2. `src/zara.js` + `test/zara.test.js`, con los tests en verde.
+1. **Paso 0 — descubrimiento. Hecho.** `curl` está bloqueado por un challenge
+   de Akamai pase lo que pase (no solo por IP de datacenter); solo un
+   navegador real (Puppeteer headless probado y confirmado) consigue la
+   página. Ver `ZARA-API.md` y `SPEC.md` §7.
+2. `src/zara.js` + `test/zara.test.js`, con los tests en verde. `fetchProduct()`
+   usa Puppeteer; `parseUrl()` y `normalize()` no dependen de él (los usa
+   también el Worker).
 3. `schema.sql` aplicado a D1 en local y en remoto.
-4. `src/index.js` con la API y `src/ui.js` con la interfaz. Prueba con
-   `wrangler dev`.
+4. `src/index.js` con la API (incluido `POST /api/check-results`, `SPEC.md`
+   §4.1) y `src/ui.js` con la interfaz. Prueba con `wrangler dev`. Sin
+   `scheduled()`: el Worker no tiene cron propio (§7.3).
 5. `src/mail.js` y el envío. Verifica que llega un correo de verdad.
-6. `src/check.js` y el `scheduled()` del cron.
+6. `src/check.js` con la lógica de transición/notificación, y `check-local.js`
+   (usa `fetchProduct()` de `src/zara.js` + Puppeteer, llama a
+   `GET /api/items` y `POST /api/check-results`).
 7. Primer `wrangler deploy`.
 8. Carga de `seed.sql` y prueba de aceptación completa (`SPEC.md` §10).
 
