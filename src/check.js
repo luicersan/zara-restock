@@ -11,7 +11,7 @@ const AVAILABLE_STATUSES = new Set(["in_stock", "low_on_stock"]);
 // Cambiar aquí y redesplegar si hace falta ajustarla; no se expone en la
 // interfaz.
 export const VENTANA_INICIO = 8;
-export const VENTANA_FIN = 23;
+export const VENTANA_FIN = 1;
 
 /**
  * Hora actual en Madrid (0-23), resolviendo CET/CEST vía Intl. hourCycle:
@@ -30,12 +30,16 @@ export function horaMadrid(fecha = new Date()) {
 
 /**
  * true si la hora de Madrid está dentro de [VENTANA_INICIO, VENTANA_FIN).
+ * Cuando VENTANA_FIN < VENTANA_INICIO, la ventana cruza la medianoche.
  * No restar horas a mano ni usar desfases fijos: el cambio de hora lo
  * resuelve Intl (CLAUDE.md).
  */
 export function dentroDeVentana(fecha = new Date()) {
   const hora = horaMadrid(fecha);
-  return hora >= VENTANA_INICIO && hora < VENTANA_FIN;
+  if (VENTANA_INICIO <= VENTANA_FIN) {
+    return hora >= VENTANA_INICIO && hora < VENTANA_FIN;
+  }
+  return hora >= VENTANA_INICIO || hora < VENTANA_FIN;
 }
 
 /**

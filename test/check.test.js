@@ -54,9 +54,10 @@ describe("evaluateSize", () => {
 });
 
 describe("dentroDeVentana", () => {
-  // Ventana 08:00-23:00 hora de Madrid. España está en CET (UTC+1) en enero
-  // y en CEST (UTC+2) en julio; las fechas UTC de abajo están elegidas para
-  // caer justo en los límites de la ventana en cada horario.
+  // Ventana 08:00-01:00 hora de Madrid: cruza la medianoche. España está en
+  // CET (UTC+1) en enero y en CEST (UTC+2) en julio; las fechas UTC de abajo
+  // están elegidas para caer justo en los límites de la ventana en cada
+  // horario.
 
   test("horario de invierno (CET, UTC+1): true a las 08:00 Madrid", () => {
     expect(dentroDeVentana(new Date("2026-01-15T07:00:00Z"))).toBe(true);
@@ -66,12 +67,12 @@ describe("dentroDeVentana", () => {
     expect(dentroDeVentana(new Date("2026-01-15T06:59:00Z"))).toBe(false);
   });
 
-  test("horario de invierno (CET, UTC+1): true a las 22:59 Madrid", () => {
-    expect(dentroDeVentana(new Date("2026-01-15T21:59:00Z"))).toBe(true);
+  test("horario de invierno (CET, UTC+1): true a las 00:59 Madrid (tras medianoche)", () => {
+    expect(dentroDeVentana(new Date("2026-01-15T23:59:00Z"))).toBe(true);
   });
 
-  test("horario de invierno (CET, UTC+1): false a las 23:00 Madrid", () => {
-    expect(dentroDeVentana(new Date("2026-01-15T22:00:00Z"))).toBe(false);
+  test("horario de invierno (CET, UTC+1): false a la 01:00 Madrid", () => {
+    expect(dentroDeVentana(new Date("2026-01-16T00:00:00Z"))).toBe(false);
   });
 
   test("horario de verano (CEST, UTC+2): true a las 08:00 Madrid", () => {
@@ -82,12 +83,12 @@ describe("dentroDeVentana", () => {
     expect(dentroDeVentana(new Date("2026-07-15T05:59:00Z"))).toBe(false);
   });
 
-  test("horario de verano (CEST, UTC+2): true a las 22:59 Madrid", () => {
-    expect(dentroDeVentana(new Date("2026-07-15T20:59:00Z"))).toBe(true);
+  test("horario de verano (CEST, UTC+2): true a las 00:59 Madrid (tras medianoche)", () => {
+    expect(dentroDeVentana(new Date("2026-07-15T22:59:00Z"))).toBe(true);
   });
 
-  test("horario de verano (CEST, UTC+2): false a las 23:00 Madrid", () => {
-    expect(dentroDeVentana(new Date("2026-07-15T21:00:00Z"))).toBe(false);
+  test("horario de verano (CEST, UTC+2): false a la 01:00 Madrid", () => {
+    expect(dentroDeVentana(new Date("2026-07-15T23:00:00Z"))).toBe(false);
   });
 
   test("misma hora UTC, distinto resultado según la época del año (el cambio de hora se resuelve solo)", () => {

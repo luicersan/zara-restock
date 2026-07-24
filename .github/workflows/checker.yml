@@ -4,8 +4,8 @@
 # Las ejecuciones programadas se retrasan con frecuencia; el margen real es de
 # 5 a 15 minutos. Es aceptable para este caso de uso (SPEC.md 3.4).
 #
-# Las horas son UTC. El rango 6-22 es un SUPERCONJUNTO de la ventana
-# 08:00-23:00 de Madrid, valido tanto en horario de verano (UTC+2) como de
+# Las horas son UTC. El rango 6-23 es un SUPERCONJUNTO de la ventana
+# 08:00-01:00 de Madrid, valido tanto en horario de verano (UTC+2) como de
 # invierno (UTC+1). Es solo una optimizacion para no arrancar runners de
 # madrugada: la decision de verdad la toma el Worker en GET /api/status, que es
 # quien conoce la ventana real. No dupliques aqui la logica de horarios.
@@ -17,7 +17,7 @@ name: checker
 
 on:
   schedule:
-    - cron: '*/5 6-22 * * *'
+    - cron: '*/5 6-23 * * *'
   workflow_dispatch:        # boton "Run workflow" para forzar una ronda a mano
 
 concurrency:
