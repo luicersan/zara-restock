@@ -1,24 +1,25 @@
-# SPEC.md — Avisador de reposiciones de Zara
+# SPEC.md — Avisador de reposiciones (Zara y Bershka)
 
 Fuente de verdad de los requisitos. Si algo de este documento contradice al código,
 manda este documento. Si hace falta cambiar un requisito, se cambia aquí primero.
 
 ## 1. Qué es
 
-Aplicación web privada que vigila artículos de zara.com agotados en una talla
-concreta y envía un correo cuando vuelven a estar disponibles.
+Aplicación web privada que vigila artículos de zara.com y bershka.com agotados
+en una talla concreta y envía un correo cuando vuelven a estar disponibles.
 
-Uso real: 2 personas, 5–6 artículos simultáneos como máximo. No es un producto,
-es una herramienta doméstica. **La simplicidad prima sobre cualquier otra
-consideración**: sobre la extensibilidad, sobre la elegancia arquitectónica y
-sobre la cobertura de casos raros.
+Uso real: 2 personas, del orden de una decena de artículos simultáneos entre
+las dos tiendas. No es un producto, es una herramienta doméstica. **La
+simplicidad prima sobre cualquier otra consideración**: sobre la
+extensibilidad, sobre la elegancia arquitectónica y sobre la cobertura de
+casos raros.
 
 ## 2. Alcance
 
 Dentro:
 
-- Alta de artículo por URL de zara.com + talla.
-- Listado de artículos con estado y borrado.
+- Alta de artículo por URL de zara.com o de bershka.com + talla.
+- Listado de artículos con estado y borrado, separado por tienda en la interfaz.
 - Configuración de la dirección de correo de notificación.
 - Comprobación periódica automática.
 - Correo en el momento en que un artículo pasa de agotado a disponible.
@@ -27,7 +28,12 @@ Fuera (no se implementa, no se deja "preparado", no se abstrae por si acaso):
 
 - Modificar un artículo existente (se borra y se añade de nuevo).
 - Usuarios, login, sesiones, autenticación.
-- Otras tiendas que no sean Zara.
+- Tiendas que no sean Zara o Bershka. Bershka se añadió porque se pidió
+  explícitamente y porque comparte infraestructura con Zara (ambas de
+  Inditex, mismo bloqueo de Akamai — `BERSHKA-API.md`); esto no abre la
+  puerta a un sistema genérico de "añadir tiendas": una tercera tienda
+  se plantearía desde cero, sin dar por hecho que el patrón de dos
+  encaja.
 - Historial, estadísticas, gráficas.
 - Notificaciones por Telegram, push o SMS.
 - Aviso de bajadas de precio.
@@ -37,15 +43,17 @@ Fuera (no se implementa, no se deja "preparado", no se abstrae por si acaso):
 
 ### 3.1 Alta de artículo
 
-Entrada: URL completa del artículo (tal cual se copia desde la web o la app de
-Zara, con sus parámetros `utm_*`) y una talla escrita a mano.
+Entrada: **la tienda** (Zara o Bershka, según la sección de la interfaz usada),
+la URL completa del artículo (tal cual se copia desde la web o la app, con sus
+parámetros `utm_*`) y una talla escrita a mano.
 
-**No hay consulta síncrona a Zara en el alta** (§7 explica por qué: Zara solo
-se puede consultar desde el script local, no desde el Worker). Al dar de alta:
+**No hay consulta síncrona a Zara/Bershka en el alta** (§7 explica por qué:
+solo se pueden consultar desde `checker.js`, no desde el Worker). Al dar de
+alta:
 
-1. Se extrae de la URL el identificador de producto y el de variante (§5). Si
-   no se puede extraer el `product_id`, se rechaza el alta (esto sí es
-   validación local, sin red).
+1. Se extrae de la URL el identificador de producto y el de variante, con el
+   `parseUrl()` de la tienda correspondiente (§5). Si no se puede extraer el
+   `product_id`, se rechaza el alta (esto sí es validación local, sin red).
 2. Se guarda el artículo con `available = 0` y `last_checked_at = NULL`. Sin
    `last_checked_at`, el artículo se muestra como **`Pendiente`** en el
    listado (§3.2): no se sabe todavía si la talla existe ni si está
@@ -68,7 +76,8 @@ se añade un artículo de noche no se verificará hasta la mañana siguiente.
 
 ### 3.2 Listado
 
-Tabla con una fila por artículo:
+Una tabla por tienda (Zara y Bershka), cada una con una fila por artículo de
+esa tienda:
 
 | Campo | Contenido |
 |---|---|
@@ -235,8 +244,8 @@ envía correo (mantiene `RESEND_API_KEY`, que `checker.js` no necesita ni ve).
 |---|---|---|
 | GET | `/` | La interfaz |
 | GET | `/api/status` | `{ run, paused, dentro_de_ventana, hora_madrid }`. `run` es `true` solo si no está en pausa **y** se está dentro de la ventana. Lo consulta `checker.js` antes de nada (§3.4) y la interfaz para pintar el estado |
-| GET | `/api/items` | Lista de artículos. La usan tanto la interfaz como `checker.js` |
-| POST | `/api/items` | Alta. Cuerpo: `{ url, size }`. Guarda en `Pendiente`, sin consultar Zara (§3.1) |
+| GET | `/api/items` | Lista de artículos de ambas tiendas (cada uno con su `store`). La usan tanto la interfaz como `checker.js` |
+| POST | `/api/items` | Alta. Cuerpo: `{ url, size, store }`, con `store` en `"zara"` \| `"bershka"`. Guarda en `Pendiente`, sin consultar la tienda (§3.1) |
 | DELETE | `/api/items/:id` | Borrado |
 | GET | `/api/settings` | `{ email, paused }`. **Nunca devuelve `pause_pin`** |
 | PUT | `/api/settings` | Cuerpo: `{ email }` |
@@ -265,7 +274,12 @@ Mecanismo, deliberadamente mínimo:
 Sin JWT, sin firmas, sin caducidad. La URL del Worker también va en un GitHub
 Secret (`WORKER_URL`), no escrita en el fichero del workflow.
 
-## 5. Formato de las URL de Zara
+## 5. Formato de las URL
+
+Cada tienda tiene su propio `parseUrl()` (`src/zara.js`, `src/bershka.js`):
+formatos de URL distintos, sin intentar unificarlos en un parser genérico.
+
+### Zara
 
 ```
 https://www.zara.com/es/es/top-halter-punto-stretch-p05584397.html?v1=517756025&utm_campaign=...
@@ -280,7 +294,24 @@ https://www.zara.com/es/es/top-halter-punto-stretch-p05584397.html?v1=517756025&
 tallas es por color. Un artículo sin `v1` en la URL se acepta, pero se avisa en la
 interfaz de que se vigilará el color por defecto del producto.
 
-Los parámetros `utm_*` se descartan al guardar. Se guarda la URL limpia.
+### Bershka
+
+```
+https://www.bershka.com/es/c0p209096041.html?colorId=812&utm_campaign=...
+                            ^^^^^^^^^          ^^^
+                            productId          variante (color)
+```
+
+- `product_id`: se extrae con `/c0p(\d+)\.html/`.
+- `variant_id`: se extrae del parámetro de consulta `colorId`.
+
+Mismo tratamiento que el `v1` de Zara: no opcional en la práctica, se acepta
+sin él con el mismo aviso de "color por defecto" (`BERSHKA-API.md`).
+
+Para ambas tiendas: los parámetros `utm_*` se descartan al guardar, y se
+acepta el slug delante del identificador de producto (cosmético, cada tienda
+redirige igual sin él) — se guarda la URL tal cual la pega el usuario, sin
+slug.
 
 ## 6. Tallas
 
@@ -299,44 +330,64 @@ con cualquier rango de tallas presente o futuro sin tocar código.
 
 ## 7. Detección de disponibilidad — el punto crítico
 
-**Zara no tiene API pública.** Este módulo es el único riesgo real del proyecto y
-por eso está aislado en `src/zara.js` con la firma:
+**Ni Zara ni Bershka tienen API pública.** Este módulo es el único riesgo real
+del proyecto y por eso está aislado, con una firma idéntica para las dos
+tiendas:
 
 ```js
 /**
  * @returns {Promise<{name: string, sizes: Array<{label: string, status: string}>}>}
  */
-export async function fetchProduct(productId, variantId)
+export async function fetchProduct(productId, variantId, browser?)
 ```
 
-Vive en `src/zara-fetch.js`, separado de `src/zara.js` por la razón que explica
-`CLAUDE.md`. Todo lo demás de la aplicación consume esta función y no sabe nada
-de cómo funciona Zara por dentro. Si Zara cambia su web, se toca este fichero y
-ninguno más.
+- Zara: `src/zara.js` (`parseUrl`, sin dependencias) + `src/zara-fetch.js`
+  (`fetchProduct`, con Puppeteer).
+- Bershka: `src/bershka.js` (`parseUrl`, sin dependencias) + `src/bershka-fetch.js`
+  (`fetchProduct`, con Puppeteer).
 
-**Confirmado en el paso 0 (`ZARA-API.md`): Zara bloquea con un challenge de
-Akamai cualquier petición que no sea un navegador real ejecutando JavaScript.**
-`curl`/`fetch` nunca lo pasan, ni siquiera desde una IP residencial normal —no
-solo desde IPs de centro de datos, que era la única hipótesis contemplada
-aquí originalmente. Un Cloudflare Worker no puede lanzar un navegador, así
-que **`fetchProduct()` no puede ejecutarse dentro del Worker**. Lo invoca
-`checker.js` (un script de Node que sí puede lanzar Chromium headless vía
-Puppeteer), que usa el mismo `src/zara.js` para todo lo que no depende del
-entorno (parseo de URL, normalización de tallas). Ver §4 y §3.4.
+Cada `fetchProduct()` acepta un `browser` de Puppeteer ya lanzado, opcional:
+`checker.js` lo reutiliza para toda la ronda (una pestaña por artículo) en
+vez de arrancar un Chromium por artículo (§3.4).
 
-### 7.1 Paso 0: descubrimiento (antes de escribir nada de la aplicación) — hecho
+Todo lo demás de la aplicación (incluida `evaluateSize()` en `src/check.js`)
+consume el resultado de `fetchProduct()` y no sabe nada de cómo funciona cada
+tienda por dentro ni de cuál produjo el dato: opera sobre la forma abstracta
+`{label, status}`. Si una tienda cambia su web, se toca el fichero de esa
+tienda y ninguno más.
 
-Ninguna ruta concreta estaba confirmada en este documento a propósito, porque
-cambian con el tiempo y una ruta inventada cuesta más que no tener ninguna.
-Resultado documentado en `ZARA-API.md`: no hay endpoint JSON por separado —
-los datos van embebidos en el HTML de la ficha de producto, en
-`window.zara.viewPayload`— y hace falta un navegador real (headless vale) para
-conseguir ese HTML.
+**Confirmado en el paso 0 de cada tienda (`ZARA-API.md`, `BERSHKA-API.md`):
+ambas bloquean con el mismo challenge de Akamai cualquier petición que no sea
+un navegador real ejecutando JavaScript** (lógico: son marcas del mismo grupo,
+Inditex, y comparten esa protección). `curl`/`fetch` nunca lo pasan, ni
+siquiera desde una IP residencial normal. Un Cloudflare Worker no puede
+lanzar un navegador, así que **`fetchProduct()` no puede ejecutarse dentro
+del Worker** para ninguna de las dos. Lo invoca `checker.js` (un script de
+Node que sí puede lanzar Chromium headless vía Puppeteer), que reparte cada
+artículo a la tienda que le corresponde (§3.4). Ver §4.
+
+Aunque el bloqueo es el mismo, la extracción del dato no lo es: Zara lo
+embebe como JSON estático en el HTML (se saca con una regex + `JSON.parse`);
+Bershka lo reconstruye en tiempo de ejecución vía Nuxt/Pinia (`window.__NUXT__`
+es una función autoejecutada, no JSON — hay que leerla con `page.evaluate()`
+dentro de Puppeteer). Por eso hay dos ficheros `*-fetch.js` en vez de uno
+parametrizable: la única parte realmente común entre las dos tiendas es la
+forma de salida, no el método de extracción.
+
+### 7.1 Paso 0: descubrimiento (antes de escribir código de cada tienda) — hecho para las dos
+
+Ninguna ruta concreta estaba confirmada en estos documentos a propósito,
+porque cambian con el tiempo y una ruta inventada cuesta más que no tener
+ninguna. Resultado documentado en `ZARA-API.md` y `BERSHKA-API.md`
+respectivamente: ningún endpoint JSON por separado en ninguna de las dos —
+Zara lo embebe estático en el HTML, Bershka lo reconstruye en tiempo de
+ejecución — y en ambos casos hace falta un navegador real (headless vale)
+para conseguirlo.
 
 ### 7.2 Registrar los hallazgos
 
-`ZARA-API.md` contiene: el método que funciona (Puppeteer headless + extraer
-el JSON embebido), un ejemplo recortado de la respuesta, y de qué campos se
+`ZARA-API.md` y `BERSHKA-API.md` contienen, cada uno para su tienda: el
+método que funciona, un ejemplo recortado de la respuesta, y de qué campos se
 sacan el nombre, la etiqueta de talla y el estado. Sin esto, el día que se
 rompa hay que repetir toda la investigación desde cero.
 
@@ -381,6 +432,7 @@ Ninguna de las dos opciones cambia el Worker, la base de datos, la interfaz ni
 ```sql
 CREATE TABLE items (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  store           TEXT    NOT NULL DEFAULT 'zara', -- 'zara' o 'bershka'
   url             TEXT    NOT NULL,
   product_id      TEXT    NOT NULL,
   variant_id      TEXT,
@@ -392,7 +444,7 @@ CREATE TABLE items (
   created_at      TEXT    NOT NULL
 );
 
-CREATE UNIQUE INDEX idx_items_unico ON items(product_id, variant_id, size);
+CREATE UNIQUE INDEX idx_items_unico ON items(store, product_id, variant_id, size);
 
 CREATE TABLE settings (
   key   TEXT PRIMARY KEY,
@@ -408,8 +460,10 @@ Claves de `settings`:
 | `paused` | `'0'` o `'1'` | Interruptor de pausa (§3.3) |
 | `pause_pin` | 4 dígitos | Sembrado a `'0000'`. **Cambiarlo en el primer arranque** |
 
-El índice único evita duplicados al añadir dos veces el mismo artículo y talla. La
-interfaz debe traducir la violación de restricción a un mensaje legible, no a un 500.
+El índice único evita duplicados al añadir dos veces el mismo artículo y talla,
+incluyendo `store`: dos tiendas distintas podrían coincidir en `product_id` por
+azar. La interfaz debe traducir la violación de restricción a un mensaje
+legible, no a un 500.
 
 `GET /api/settings` nunca devuelve `pause_pin`. No es un secreto de peso (§3.3),
 pero no hay razón para servirlo.
@@ -420,8 +474,10 @@ Fechas en ISO 8601 UTC. La conversión a horario de Madrid se hace al pintar.
 
 Solo donde aportan. Con `vitest`:
 
-- `parseUrl()`: extrae `product_id` y `variant_id` de las 5 URLs reales de
-  `seed.sql`, incluida una sin `v1`.
+- `parseUrl()` de Zara: extrae `product_id` y `variant_id` de las 5 URLs
+  reales de `seed.sql`, incluida una sin `v1`.
+- `parseUrl()` de Bershka: extrae `product_id` y `colorId` de las URLs reales
+  dadas de alta, incluida una con espacios sueltos alrededor.
 - `normalize()` y la coincidencia de tallas: `"s"` casa con `"S"`, `"37 "` casa
   con `"37"`, `"38"` no casa con `"37"`.
 - `decidirNotificacion(anterior, actual)`: solo `false → true` devuelve `true`.
@@ -432,7 +488,8 @@ Solo donde aportan. Con `vitest`:
   enero a la misma hora UTC) para verificar que el cambio de hora se maneja
   solo. Es el único punto del código donde una zona horaria puede morder.
 
-No se testea la llamada real a Zara ni el envío de correo. Se comprueban a mano.
+No se testea la llamada real a Zara/Bershka ni el envío de correo. Se
+comprueban a mano.
 
 ## 10. Criterio de terminado
 
@@ -486,3 +543,6 @@ algo para descubrir que el correo no salía no es un plan de pruebas.
 | Token compartido en `/api/check-results` | El repo es público y la URL del Worker es descubrible; sin token, un tercero puede inyectar disponibilidad falsa y provocar correos espurios |
 | GitHub Actions antes que hardware propio | Gratis, sin mantenimiento y sin consumo. Solo se pasa al ordenador propio si Akamai rechaza las IPs de los runners |
 | Tallas como cadenas, sin tipos | Elimina toda la lógica de rangos de tallas sin perder funcionalidad |
+| Bershka como segunda tienda, con `src/bershka.js`/`src/bershka-fetch.js` aparte en vez de generalizar `src/zara.js` | Pedido explícitamente por el propietario. Mismo bloqueo de Akamai que Zara (mismo grupo, Inditex), pero formato de URL y método de extracción distintos (JSON estático vs `window.__NUXT__` de Nuxt/Pinia); duplicar `parseUrl()`/`normalize()` es más simple que un parser configurable para dos casos |
+| `evaluateSize()` compartida entre las dos tiendas sin cambios | Ya operaba sobre `{label, status}` sin saber de dónde venía; y el vocabulario de disponibilidad (`in_stock`, `low_on_stock`, `out_of_stock`, `coming_soon`) resultó ser idéntico en las dos tiendas |
+| `store` en `items` y en el índice único | Necesario para que `checker.js` sepa a qué tienda preguntar por cada artículo, y para no chocar si dos tiendas coinciden por azar en `product_id` |

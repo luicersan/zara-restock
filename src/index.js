@@ -3,9 +3,19 @@
 // que no sea un navegador real ejecutando JavaScript (ZARA-API.md).
 
 import { renderUI } from "./ui.js";
-import { normalize, parseUrl } from "./zara.js";
+import * as zara from "./zara.js";
+import * as bershka from "./bershka.js";
 import { decidirNotificacion, dentroDeVentana, horaMadrid } from "./check.js";
 import { sendRestockEmail } from "./mail.js";
+
+// No es un sistema de plugins (CLAUDE.md lo prohíbe explícitamente): es una
+// tabla de despacho de dos entradas, para no repetir el mismo if/else de
+// parseUrl/normalize en cada sitio que necesita saber qué tienda es un
+// artículo. Añadir una tercera tienda no está contemplado (SPEC.md §2).
+const TIENDAS = {
+  zara: { parseUrl: zara.parseUrl, normalize: zara.normalize, variante: "color (v1)" },
+  bershka: { parseUrl: bershka.parseUrl, normalize: bershka.normalize, variante: "color (colorId)" },
+};
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -61,11 +71,12 @@ async function handleStatus(env) {
 
 async function handleListItems(env) {
   const { results } = await env.DB.prepare(
-    "SELECT id, url, product_id, variant_id, size, name, available, last_checked_at, last_error, created_at FROM items ORDER BY id"
+    "SELECT id, store, url, product_id, variant_id, size, name, available, last_checked_at, last_error, created_at FROM items ORDER BY id"
   ).all();
 
   const items = results.map((row) => ({
     id: row.id,
+    store: row.store,
     url: row.url,
     productId: row.product_id,
     variantId: row.variant_id,
@@ -84,31 +95,37 @@ async function handleCreateItem(request, env) {
   const body = await request.json();
   const rawUrl = typeof body.url === "string" ? body.url.trim() : "";
   const rawSize = typeof body.size === "string" ? body.size.trim() : "";
+  const store = typeof body.store === "string" ? body.store : "";
   if (!rawUrl || !rawSize) {
     return jsonResponse({ error: "Faltan la URL o la talla" }, 400);
   }
 
+  const tienda = TIENDAS[store];
+  if (!tienda) {
+    return jsonResponse({ error: "Tienda no reconocida" }, 400);
+  }
+
   let parsed;
   try {
-    parsed = parseUrl(rawUrl);
+    parsed = tienda.parseUrl(rawUrl);
   } catch (err) {
     return jsonResponse({ error: err.message }, 400);
   }
 
-  const size = normalize(rawSize);
+  const size = tienda.normalize(rawSize);
   const now = new Date().toISOString();
 
   try {
     const result = await env.DB.prepare(
-      `INSERT INTO items (url, product_id, variant_id, size, available, created_at)
-       VALUES (?, ?, ?, ?, 0, ?)`
+      `INSERT INTO items (store, url, product_id, variant_id, size, available, created_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?)`
     )
-      .bind(parsed.cleanUrl, parsed.productId, parsed.variantId, size, now)
+      .bind(store, parsed.cleanUrl, parsed.productId, parsed.variantId, size, now)
       .run();
 
     const warning = parsed.variantId
       ? null
-      : "La URL no incluye el color (v1): se vigilará el color por defecto del producto.";
+      : `La URL no incluye el ${tienda.variante}: se vigilará el color por defecto del producto.`;
 
     return jsonResponse({ id: result.meta.last_row_id, warning }, 201);
   } catch (err) {

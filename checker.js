@@ -1,10 +1,11 @@
 // Corre fuera del Worker: en GitHub Actions o en un ordenador propio
-// (CLAUDE.md, SPEC.md §7.3). Es el único proceso que habla con Zara, vía
-// Puppeteer (src/zara-fetch.js), porque Zara bloquea con un challenge de
-// Akamai cualquier petición que no sea un navegador real ejecutando
-// JavaScript (ZARA-API.md). El Worker sigue siendo quien decide si hay que
-// avisar y quien envía el correo (src/check.js, src/mail.js): este script
-// solo consulta disponibilidad y envía resultados crudos.
+// (CLAUDE.md, SPEC.md §7.3). Es el único proceso que habla con Zara y con
+// Bershka, vía Puppeteer (src/zara-fetch.js, src/bershka-fetch.js), porque
+// ambas bloquean con el mismo challenge de Akamai cualquier petición que no
+// sea un navegador real ejecutando JavaScript (ZARA-API.md, BERSHKA-API.md).
+// El Worker sigue siendo quien decide si hay que avisar y quien envía el
+// correo (src/check.js, src/mail.js): este script solo consulta
+// disponibilidad y envía resultados crudos.
 //
 // DE UN SOLO DISPARO: hace una ronda y termina con código 0. Sin bucle, sin
 // setInterval, sin demonio — la periodicidad la pone quien lo lanza (el
@@ -14,11 +15,19 @@
 // Uso: WORKER_URL=https://tu-worker.workers.dev CHECKER_TOKEN=... node checker.js
 
 import puppeteer from "puppeteer";
-import { fetchProduct } from "./src/zara-fetch.js";
+import { fetchProduct as fetchProductZara } from "./src/zara-fetch.js";
+import { fetchProduct as fetchProductBershka } from "./src/bershka-fetch.js";
 import { evaluateSize } from "./src/check.js";
 
 const WORKER_URL = process.env.WORKER_URL || "http://127.0.0.1:8787";
 const CHECKER_TOKEN = process.env.CHECKER_TOKEN || "";
+
+// Misma tabla de despacho que src/index.js: dos tiendas, sin sistema de
+// plugins genérico (CLAUDE.md).
+const FETCHERS = {
+  zara: fetchProductZara,
+  bershka: fetchProductBershka,
+};
 
 function log(mensaje) {
   console.log(`[${new Date().toISOString()}] ${mensaje}`);
@@ -56,6 +65,10 @@ async function postResults(results) {
 
 async function checkItem(item, browser) {
   try {
+    const fetchProduct = FETCHERS[item.store];
+    if (!fetchProduct) {
+      throw new Error(`Tienda desconocida: ${item.store}`);
+    }
     const product = await fetchProduct(item.productId, item.variantId, browser);
     const available = evaluateSize(product.sizes, item.size);
     return { itemId: item.id, available, name: product.name, error: null };
@@ -83,7 +96,7 @@ async function runRound(items) {
       const result = await checkItem(item, browser);
       results.push(result);
       const detalle = result.error ? `ERROR: ${result.error}` : result.available ? "disponible" : "agotado";
-      log(`  #${item.id} talla ${item.size} (${item.productId}/${item.variantId ?? "sin v1"}): ${detalle}`);
+      log(`  #${item.id} [${item.store}] talla ${item.size} (${item.productId}/${item.variantId ?? "sin variante"}): ${detalle}`);
     }
   } finally {
     await browser.close();

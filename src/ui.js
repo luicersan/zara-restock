@@ -7,7 +7,7 @@ export function renderUI() {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Avisador de reposiciones de Zara</title>
+<title>Avisador de reposiciones (Zara y Bershka)</title>
 <style>
   :root { color-scheme: light dark; }
   body {
@@ -63,7 +63,7 @@ export function renderUI() {
 </style>
 </head>
 <body>
-  <h1>Avisador de reposiciones de Zara</h1>
+  <h1>Avisador de reposiciones</h1>
 
   <div id="banda-estado" class="banda">
     <span id="banda-texto">Cargando estado…</span>
@@ -71,23 +71,23 @@ export function renderUI() {
   </div>
   <div id="estado-mensaje"></div>
 
-  <section id="seccion-alta">
-    <h2>Añadir artículo</h2>
-    <form id="form-alta">
+  <section id="seccion-alta-zara">
+    <h2>Añadir artículo de Zara</h2>
+    <form id="form-alta-zara" data-store="zara">
       <label>URL del artículo
-        <input type="text" id="input-url" name="url" placeholder="https://www.zara.com/es/es/...html?v1=..." required>
+        <input type="text" name="url" placeholder="https://www.zara.com/es/es/...html?v1=..." required>
       </label>
       <label>Talla
-        <input type="text" id="input-talla" name="size" placeholder="S, 37, XL..." required>
+        <input type="text" name="size" placeholder="S, 37, XL..." required>
       </label>
       <button type="submit">Añadir</button>
     </form>
     <p class="aviso">Los artículos nuevos quedan como <strong>Pendiente</strong> hasta la próxima ronda de comprobación (unos 5 minutos; si se añaden de noche, hasta las 08:00).</p>
-    <div id="alta-mensaje"></div>
+    <div id="alta-zara-mensaje"></div>
   </section>
 
-  <section id="seccion-listado">
-    <h2>Artículos vigilados</h2>
+  <section id="seccion-listado-zara">
+    <h2>Artículos de Zara vigilados</h2>
     <div class="tabla-envoltorio">
       <table>
         <thead>
@@ -99,7 +99,42 @@ export function renderUI() {
             <th></th>
           </tr>
         </thead>
-        <tbody id="tabla-cuerpo">
+        <tbody id="tabla-zara-cuerpo">
+          <tr><td colspan="5">Cargando…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="seccion-alta-bershka">
+    <h2>Añadir artículo de Bershka</h2>
+    <form id="form-alta-bershka" data-store="bershka">
+      <label>URL del artículo
+        <input type="text" name="url" placeholder="https://www.bershka.com/es/...html?colorId=..." required>
+      </label>
+      <label>Talla
+        <input type="text" name="size" placeholder="S, 37, XL..." required>
+      </label>
+      <button type="submit">Añadir</button>
+    </form>
+    <p class="aviso">Los artículos nuevos quedan como <strong>Pendiente</strong> hasta la próxima ronda de comprobación (unos 5 minutos; si se añaden de noche, hasta las 08:00).</p>
+    <div id="alta-bershka-mensaje"></div>
+  </section>
+
+  <section id="seccion-listado-bershka">
+    <h2>Artículos de Bershka vigilados</h2>
+    <div class="tabla-envoltorio">
+      <table>
+        <thead>
+          <tr>
+            <th>Artículo</th>
+            <th>Talla</th>
+            <th>Estado</th>
+            <th>Última comprobación</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="tabla-bershka-cuerpo">
           <tr><td colspan="5">Cargando…</td></tr>
         </tbody>
       </table>
@@ -189,18 +224,16 @@ document.getElementById("boton-pausa").addEventListener("click", async () => {
   await cargarEstado();
 });
 
-async function cargarItems() {
-  const respuesta = await fetch("/api/items");
-  const datos = await respuesta.json();
-  const cuerpo = document.getElementById("tabla-cuerpo");
+function renderTabla(tbodyId, items) {
+  const cuerpo = document.getElementById(tbodyId);
   cuerpo.innerHTML = "";
 
-  if (datos.items.length === 0) {
+  if (items.length === 0) {
     cuerpo.innerHTML = '<tr><td colspan="5">Todavía no hay artículos.</td></tr>';
     return;
   }
 
-  for (const item of datos.items) {
+  for (const item of items) {
     const fila = document.createElement("tr");
 
     const celdaArticulo = document.createElement("td");
@@ -244,6 +277,13 @@ async function cargarItems() {
   }
 }
 
+async function cargarItems() {
+  const respuesta = await fetch("/api/items");
+  const datos = await respuesta.json();
+  renderTabla("tabla-zara-cuerpo", datos.items.filter((item) => item.store === "zara"));
+  renderTabla("tabla-bershka-cuerpo", datos.items.filter((item) => item.store === "bershka"));
+}
+
 async function borrarItem(id) {
   await fetch("/api/items/" + id, { method: "DELETE" });
   await cargarItems();
@@ -258,32 +298,40 @@ async function cargarAjustes() {
   }
 }
 
-document.getElementById("form-alta").addEventListener("submit", async (evento) => {
-  evento.preventDefault();
-  mostrarMensaje("alta-mensaje", "");
-  const url = document.getElementById("input-url").value.trim();
-  const size = document.getElementById("input-talla").value.trim();
+function conectarFormularioAlta(formId, mensajeId) {
+  const form = document.getElementById(formId);
+  const store = form.dataset.store;
 
-  const respuesta = await fetch("/api/items", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, size }),
+  form.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    mostrarMensaje(mensajeId, "");
+    const url = form.querySelector('[name="url"]').value.trim();
+    const size = form.querySelector('[name="size"]').value.trim();
+
+    const respuesta = await fetch("/api/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, size, store }),
+    });
+    const datos = await respuesta.json();
+
+    if (!respuesta.ok) {
+      mostrarMensaje(mensajeId, datos.error || "No se ha podido añadir el artículo.", "error");
+      return;
+    }
+
+    form.reset();
+    if (datos.warning) {
+      mostrarMensaje(mensajeId, datos.warning, "warning");
+    } else {
+      mostrarMensaje(mensajeId, "Artículo añadido. Quedará como Pendiente hasta la próxima comprobación.", "ok");
+    }
+    await cargarItems();
   });
-  const datos = await respuesta.json();
+}
 
-  if (!respuesta.ok) {
-    mostrarMensaje("alta-mensaje", datos.error || "No se ha podido añadir el artículo.", "error");
-    return;
-  }
-
-  document.getElementById("form-alta").reset();
-  if (datos.warning) {
-    mostrarMensaje("alta-mensaje", datos.warning, "warning");
-  } else {
-    mostrarMensaje("alta-mensaje", "Artículo añadido. Quedará como Pendiente hasta la próxima comprobación.", "ok");
-  }
-  await cargarItems();
-});
+conectarFormularioAlta("form-alta-zara", "alta-zara-mensaje");
+conectarFormularioAlta("form-alta-bershka", "alta-bershka-mensaje");
 
 document.getElementById("form-ajustes").addEventListener("submit", async (evento) => {
   evento.preventDefault();

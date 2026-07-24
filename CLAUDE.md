@@ -4,10 +4,19 @@ Lee `SPEC.md` antes de tocar nada. Es la fuente de verdad de los requisitos.
 
 ## Qué es esto
 
-Avisador de reposiciones de artículos de Zara. Dos piezas: un Cloudflare Worker
-que sirve la interfaz, expone una API y envía los correos; y `checker.js`, un
-script de Node con Puppeteer que consulta Zara cada 5 minutos y le manda los
-resultados al Worker. El Worker **no** tiene cron propio.
+Avisador de reposiciones de artículos de Zara y Bershka. Dos piezas: un
+Cloudflare Worker que sirve la interfaz, expone una API y envía los correos;
+y `checker.js`, un script de Node con Puppeteer que consulta Zara y Bershka
+cada 5 minutos y le manda los resultados al Worker. El Worker **no** tiene
+cron propio.
+
+Bershka se añadió por petición explícita del propietario, no por
+generalización especulativa: sigue sin haber un "sistema de tiendas" — hay
+dos implementaciones paralelas (`src/zara*.js`, `src/bershka*.js`) que
+comparten solo lo que ya era genérico antes de que existiera Bershka
+(`evaluateSize()` en `src/check.js`). Una tercera tienda no está contemplada
+(`SPEC.md` §2) y, si se pide, se plantea desde cero en vez de asumir que el
+patrón de dos encaja.
 
 ## Regla número uno
 
@@ -25,11 +34,11 @@ Concretamente, no hagas nada de esto salvo que se te pida:
 - Ni dependencias de npm más allá de `wrangler`, `vitest` y `puppeteer`. El SDK
   de Resend tampoco: es un `fetch` a una URL.
 
-`puppeteer` es la única excepción, y solo para `checker.js` (ver `ZARA-API.md`
-y `SPEC.md` §7): Zara bloquea con un challenge de Akamai cualquier petición sin
-navegador real ejecutando JavaScript, confirmado en el paso 0. El Worker en sí
-**no** importa `puppeteer` ni lo necesita — sigue sin más dependencias que
-`wrangler` y `vitest`.
+`puppeteer` es la única excepción, y solo para `checker.js` (ver `ZARA-API.md`,
+`BERSHKA-API.md` y `SPEC.md` §7): Zara y Bershka bloquean con un challenge de
+Akamai cualquier petición sin navegador real ejecutando JavaScript, confirmado
+en el paso 0 de cada una. El Worker en sí **no** importa `puppeteer` ni lo
+necesita — sigue sin más dependencias que `wrangler` y `vitest`.
 
 Si dudas entre dos soluciones, elige la que tenga menos ficheros.
 
@@ -47,13 +56,15 @@ Si dudas entre dos soluciones, elige la que tenga menos ficheros.
 ├── CLAUDE.md          este fichero
 ├── SPEC.md            requisitos
 ├── DESPLIEGUE.md      pasos de despliegue y runbook
-├── ZARA-API.md        resultado del paso 0
+├── ZARA-API.md        resultado del paso 0 de Zara
+├── BERSHKA-API.md     resultado del paso 0 de Bershka
 ├── wrangler.toml
 ├── package.json
 ├── schema.sql
 ├── seed.sql
 ├── checker.js         UN SOLO DISPARO: una ronda y sale. Sin bucle, sin
-│                      demonio. Único fichero que importa zara-fetch.js
+│                      demonio. Reparte cada artículo a zara-fetch.js o
+│                      bershka-fetch.js según su store
 ├── .github/workflows/
 │   └── checker.yml    lanza checker.js cada 5 min (alojamiento A)
 ├── checker.timer      \ unidades systemd para el alojamiento B
@@ -61,28 +72,40 @@ Si dudas entre dos soluciones, elige la que tenga menos ficheros.
 ├── src/
 │   ├── index.js       fetch() + enrutado. SIN scheduled(): no hay cron de
 │   │                  Worker (SPEC.md §7.3)
-│   ├── zara.js        parseUrl() y normalize(). Sin dependencias.
-│   ├── zara-fetch.js  fetchProduct(), con Puppeteer. AISLADO.
-│   ├── check.js       transición/notificación + dentroDeVentana()
+│   ├── zara.js          parseUrl() y normalize() de Zara. Sin dependencias.
+│   ├── zara-fetch.js    fetchProduct() de Zara, con Puppeteer. AISLADO.
+│   ├── bershka.js       parseUrl() y normalize() de Bershka. Sin dependencias.
+│   ├── bershka-fetch.js fetchProduct() de Bershka, con Puppeteer. AISLADO.
+│   ├── check.js       transición/notificación + dentroDeVentana(), agnóstico
+│   │                  a la tienda
 │   ├── mail.js        sendRestockEmail()
 │   └── ui.js          devuelve la cadena HTML de la interfaz
 └── test/
-    └── zara.test.js
+    ├── zara.test.js
+    └── bershka.test.js
 ```
 
 `src/zara.js` + `src/zara-fetch.js` son los únicos ficheros que saben cómo
-funciona Zara por dentro. Nada fuera de ellos conoce rutas, cabeceras ni
-formatos de respuesta. Están separados en dos ficheros por una razón muy
-concreta, comprobada con `wrangler dev` al construir el paso 4: `fetchProduct()`
-usa Puppeteer, y Puppeteer importa módulos nativos de Node (`fs`, `crypto`,
-`child_process`...) que el bundler de Workers no puede empaquetar. Si
-`fetchProduct()` viviera en el mismo fichero que `parseUrl()`/`normalize()`,
-el Worker fallaría al compilar en cuanto `index.js` importase cualquier cosa
-de ese fichero, aunque nunca llamase a `fetchProduct()`. Por eso:
+funciona Zara por dentro; `src/bershka.js` + `src/bershka-fetch.js`, los
+únicos que saben cómo funciona Bershka. Nada fuera de ellos conoce rutas,
+cabeceras ni formatos de respuesta de ninguna de las dos tiendas. Cada
+`fetchProduct()` está separado de su `parseUrl()`/`normalize()` por una razón
+muy concreta, comprobada con `wrangler dev` al construir el paso 4 (con
+Zara): `fetchProduct()` usa Puppeteer, y Puppeteer importa módulos nativos de
+Node (`fs`, `crypto`, `child_process`...) que el bundler de Workers no puede
+empaquetar. Si viviera en el mismo fichero que `parseUrl()`/`normalize()`, el
+Worker fallaría al compilar en cuanto `index.js` importase cualquier cosa de
+ese fichero, aunque nunca llamase a `fetchProduct()`. Por eso, para cada
+tienda:
 
-- `src/zara.js`: sin dependencias. Lo importan tanto el Worker como `checker.js`.
-- `src/zara-fetch.js`: importa `puppeteer`. Solo lo importa `checker.js`, nunca
-  `src/index.js` ni nada que llegue al Worker.
+- `src/{tienda}.js`: sin dependencias. Lo importan tanto el Worker como `checker.js`.
+- `src/{tienda}-fetch.js`: importa `puppeteer`. Solo lo importa `checker.js`,
+  nunca `src/index.js` ni nada que llegue al Worker.
+
+No hay un tercer fichero "genérico" que intente unificar las dos tiendas: la
+única pieza compartida de verdad es `evaluateSize()` en `src/check.js`, porque
+ya operaba sobre `{label, status}` sin saber de dónde venía antes de que
+existiera Bershka.
 
 **`checker.js` no tiene bucle.** Hace una ronda y termina con código 0. Quien
 marca la periodicidad es el planificador de fuera (cron de GitHub Actions o
@@ -139,8 +162,8 @@ privado sin más consecuencia.
 ## Reglas de código
 
 - Manejo de errores explícito. Nada de `catch {}` vacíos.
-- Un error al consultar Zara **nunca** modifica el estado `available` guardado.
-  Solo escribe `last_error` y `last_checked_at`.
+- Un error al consultar Zara o Bershka **nunca** modifica el estado `available`
+  guardado. Solo escribe `last_error` y `last_checked_at`.
 - Todas las consultas a D1 con parámetros vinculados (`.bind()`), nunca
   concatenando cadenas.
 - La API key de Resend se lee de `env.RESEND_API_KEY` y el token del checker de
@@ -155,20 +178,24 @@ privado sin más consecuencia.
 
 ## Interfaz
 
-Una sola página, tres bloques, en este orden:
+Una sola página, en este orden:
 
 1. **Banda de estado** arriba del todo: `Activo` / `En pausa` / `Fuera de
    horario (activo de 08:00 a 23:00)`, según `GET /api/status`, con el botón
    `Pausar` / `Reanudar` que pide el PIN.
-2. Formulario de alta: campo de URL, campo de talla, botón "Añadir". Con un aviso
-   de que los artículos nuevos aparecen como `Pendiente` hasta la siguiente ronda.
-3. Tabla de artículos con el botón de borrar en cada fila. **Sin botón
-   "Comprobar ahora"** (`SPEC.md` §4.1).
+2. Formulario de alta de Zara + tabla de artículos de Zara.
+3. Formulario de alta de Bershka + tabla de artículos de Bershka, debajo del
+   bloque de Zara. Mismo formulario que el de Zara salvo por el `store` que
+   manda al enviarlo; misma tabla salvo por qué artículos filtra.
 4. Campo de correo de notificación con su botón "Guardar".
+
+Cada formulario de alta avisa de que los artículos nuevos aparecen como
+`Pendiente` hasta la siguiente ronda. Ninguna tabla tiene botón "Comprobar
+ahora" (`SPEC.md` §4.1).
 
 HTML plano, unas pocas reglas de CSS en un `<style>` en línea, `fetch` en un
 `<script>` en línea. Legible en móvil, que es donde se van a añadir los artículos
-después de verlos en la app de Zara. Los errores se muestran en la propia página,
+después de verlos en la app. Los errores se muestran en la propia página,
 no con `alert()` ni solo en la consola.
 
 No inviertas tiempo en el aspecto visual más allá de que se lea bien.
@@ -197,7 +224,10 @@ Si la comprobación deja de funcionar, descarta primero lo barato, en este orden
 2. ¿Se están ejecutando los workflows? GitHub desactiva los `schedule` de un
    repo público tras 60 días sin actividad.
 3. ¿Qué dice la columna Estado del listado? Si todos están en `Error` con un
-   challenge de Akamai, el problema es el alojamiento (§7.3), no el código.
-4. Solo entonces: `ZARA-API.md` y `src/zara-fetch.js` (o `src/zara.js` si es un
-   problema de parseo de URL/tallas). Zara habrá cambiado algo. El resto de la
-   aplicación no se toca.
+   challenge de Akamai, el problema es el alojamiento (§7.3), no el código. Si
+   solo falla una de las dos tiendas, es esa tienda la que ha cambiado algo,
+   no el alojamiento.
+4. Solo entonces: `ZARA-API.md`/`src/zara-fetch.js` o
+   `BERSHKA-API.md`/`src/bershka-fetch.js` según cuál falle (o `src/zara.js`
+   / `src/bershka.js` si es un problema de parseo de URL/tallas). El resto de
+   la aplicación no se toca.
