@@ -24,7 +24,11 @@ export async function fetchProduct(productId, variantId, browser) {
   const url = `https://www.zara.com/es/es/producto-p${productId}.html${variantId ? `?v1=${variantId}` : ""}`;
 
   const browserPropio = !browser;
-  const b = browser ?? (await puppeteer.launch({ headless: true }));
+  // --no-sandbox: hace falta en runners de CI (Ubuntu 24.04+) que bloquean
+  // los user namespaces sin privilegios vía AppArmor; sin él, Puppeteer no
+  // consigue arrancar Chromium ahí. Ver checker.js.
+  const b =
+    browser ?? (await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] }));
   try {
     const page = await b.newPage();
     try {

@@ -67,7 +67,14 @@ async function checkItem(item, browser) {
 async function runRound(items) {
   log(`comprobando ${items.length} artículo(s)...`);
   const results = [];
-  const browser = await puppeteer.launch({ headless: true });
+  // --no-sandbox: los runners de GitHub Actions (Ubuntu 24.04) bloquean los
+  // user namespaces sin privilegios vía AppArmor, y el sandbox de Chromium
+  // los necesita para arrancar. Sin esto, Puppeteer aborta con "No usable
+  // sandbox" antes de abrir ninguna página.
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
   try {
     // En serie, no en paralelo: un artículo con error no debe interrumpir a
     // los demás (SPEC.md §3.4). Un único navegador para toda la ronda, una
