@@ -81,6 +81,21 @@ Lanza el workflow a mano con **Run workflow** y mira la salida.
 días sin actividad.** Lo avisa por correo. Un commit trivial lo reactiva; si te
 molesta, ponlo en el calendario cada dos meses.
 
+### Por qué el cron es horario y no cada 5 minutos
+
+Porque un `cron: '*/5'` **no funciona**, y no es un fallo de configuración: el
+planificador de GitHub descarta la mayoría de los eventos programados. Medido en
+este repo, de ~50 disparos esperados en 4 horas llegaron 2.
+
+Así que el cron dispara **una vez por hora** y el job hace un bucle de 10 rondas
+separadas 5 minutos (~45 min de cobertura). Lo que verás en la pestaña `Actions`
+es, por tanto, **una ejecución por hora de ~45 minutos**, no doce de un minuto.
+Eso es lo correcto; si vuelves a ver ejecuciones cortas y frecuentes, alguien ha
+revertido el workflow.
+
+`Run workflow` a mano hace **una sola ronda** y termina en un minuto, para que
+siga sirviendo como comprobación inmediata.
+
 ## 3. El checker — alojamiento B: ordenador propio
 
 Solo si el A ha fallado, o si prefieres no depender de GitHub.
@@ -135,8 +150,9 @@ Consumo estimado: unos 12 W continuos, en torno a 20 €/año.
 ## Pausar la aplicación
 
 Botón `Pausar` de la interfaz, que pide el PIN. Con `paused = 1`, `checker.js`
-sale sin abrir Puppeteer. Los runners de GitHub siguen arrancando y terminando
-en segundos: es gratis y no toca Zara.
+sale sin abrir Puppeteer. El runner sigue arrancando cada hora y recorriendo sus
+10 rondas, pero cada una termina en un par de segundos contra `/api/status`: es
+gratis y no toca Zara.
 
 ## Cambiar la ventana horaria
 
@@ -157,8 +173,10 @@ verificado (~10 €/año), sin cambios en la aplicación más allá del remitent
 En orden, de lo más barato a lo más caro:
 
 1. **¿Está en pausa o fuera de horario?** Banda de estado de la interfaz.
-2. **¿Se están ejecutando los workflows?** Pestaña `Actions`. Si llevan 60 días
-   parados, GitHub los ha desactivado por inactividad.
+2. **¿Se están ejecutando los workflows?** Pestaña `Actions`. Debe haber **una
+   ejecución por hora, de ~45 minutos**. Si llevan 60 días parados, GitHub los ha
+   desactivado por inactividad. Que falte alguna hora suelta es normal: el
+   planificador de GitHub descarta disparos y no hay forma de evitarlo.
 3. **Columna Estado del listado.** Si todos están en `Error` con un challenge de
    Akamai, el problema es el alojamiento: pasa del A al B. Si es un solo
    artículo, probablemente ya no exista en el catálogo; bórralo.

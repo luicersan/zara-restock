@@ -66,7 +66,8 @@ Si dudas entre dos soluciones, elige la que tenga menos ficheros.
 │                      demonio. Reparte cada artículo a zara-fetch.js o
 │                      bershka-fetch.js según su store
 ├── .github/workflows/
-│   └── checker.yml    lanza checker.js cada 5 min (alojamiento A)
+│   └── checker.yml    cron horario + bucle de 10 rondas de 5 min dentro del
+│                      job (alojamiento A). El */5 no funciona: ver abajo
 ├── checker.timer      \ unidades systemd para el alojamiento B
 ├── checker.service    /  (ordenador propio). Ver DESPLIEGUE.md
 ├── src/
@@ -108,9 +109,18 @@ ya operaba sobre `{label, status}` sin saber de dónde venía antes de que
 existiera Bershka.
 
 **`checker.js` no tiene bucle.** Hace una ronda y termina con código 0. Quien
-marca la periodicidad es el planificador de fuera (cron de GitHub Actions o
-`systemd timer`). No añadas un `setInterval` ni un `while (true)`: rompe el
-alojamiento A y complica el B.
+marca la periodicidad es de fuera. No añadas un `setInterval` ni un
+`while (true)`: complica el alojamiento B y no arregla nada del A.
+
+Ojo con esto, porque no es lo que parece a primera vista: el cron de
+`checker.yml` es **horario**, y las rondas de 5 minutos las da un bucle `sh`
+dentro del propio job (10 rondas por disparo). No es un despiste ni un resto de
+otra cosa. Un `cron: '*/5'` no funciona: GitHub descarta la mayoría de los
+eventos programados —medido aquí, 2 de ~50 en 4 horas— y no hay ajuste que lo
+cambie (`SPEC.md` §3.4). El bucle está en el YAML y no en `checker.js` justo
+para que el script siga sirviendo tal cual en el alojamiento B, donde la
+periodicidad la pone `systemd`. Si alguna vez "simplificas" moviendo el bucle al
+script, rompes el B; si lo devuelves a `*/5`, vuelves a una ronda por hora.
 
 **`checker.js` no sabe nada de horarios ni de pausas.** Lo primero que hace es
 `GET /api/status`; si `run` es `false`, sale inmediatamente sin abrir Puppeteer.

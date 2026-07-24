@@ -84,8 +84,11 @@ esa tienda:
 | Artículo | Nombre del producto, enlazando a la URL original (mientras esté `Pendiente` y no se conozca el nombre, se muestra la URL) |
 | Talla | La talla vigilada |
 | Estado | `Disponible` / `Agotado` / `Pendiente` / `Error` |
-| Última comprobación | Fecha y hora, en horario de Madrid. Vacío si sigue `Pendiente` |
 | — | Botón de borrar |
+
+No hay columna de "última comprobación": todos los artículos se comprueban en
+la misma ronda, así que una fecha por fila repetiría el mismo valor en todas y
+solo servía para que la tabla no cupiera en un móvil, que es donde se usa.
 
 `Pendiente`: `last_checked_at` es `NULL`, es decir, el artículo se acaba de dar
 de alta y el script local todavía no ha hecho su primera ronda (§3.1).
@@ -115,13 +118,17 @@ toque accidental en el móvil. Comparación directa de cadenas en el Worker, sin
 hash, sin sesiones, sin límite de intentos.
 
 **Ventana horaria activa.** Fuera de ella no se consulta a Zara. Por defecto
-**08:00–23:00 hora de Madrid**, definida como dos constantes en el código
-(`VENTANA_INICIO = 8`, `VENTANA_FIN = 23`). No se expone en la interfaz: se
+**08:00–01:00 hora de Madrid**, definida como dos constantes en el código
+(`VENTANA_INICIO = 8`, `VENTANA_FIN = 1`). No se expone en la interfaz: se
 cambia en el código y se redespliega.
 
-Motivo: las horas de sueño son ~9 de cada 24 en las que un correo no se va a
+La ventana **cruza la medianoche** (`VENTANA_FIN < VENTANA_INICIO`), así que la
+comparación no puede ser un simple `inicio <= hora < fin`; ver el código de
+abajo. Es el caso que hay que tener presente al tocar `dentroDeVentana()`.
+
+Motivo: las horas de sueño son ~7 de cada 24 en las que un correo no se va a
 leer, y cada consulta nocturna es tráfico contra el detector de bots de Zara sin
-ninguna contrapartida. Reduce la exposición en torno a un tercio.
+ninguna contrapartida.
 
 **El cálculo de ventana y pausa vive en el Worker, en un solo sitio**, expuesto
 en `GET /api/status` (§4.1). El checker no sabe nada de horarios: pregunta y
@@ -130,10 +137,14 @@ desde el portátil, y el cambio de hora CET/CEST lo resuelve `Intl` sin código
 propio:
 
 ```js
-const horaMadrid = Number(new Intl.DateTimeFormat("es-ES", {
-  timeZone: "Europe/Madrid", hour: "numeric", hour12: false,
+const hora = Number(new Intl.DateTimeFormat("es-ES", {
+  timeZone: "Europe/Madrid", hour: "numeric", hourCycle: "h23",
 }).format(new Date()));
-const dentroDeVentana = horaMadrid >= VENTANA_INICIO && horaMadrid < VENTANA_FIN;
+
+// La ventana cruza la medianoche, de ahí el OR en vez del AND.
+const dentroDeVentana = VENTANA_INICIO <= VENTANA_FIN
+  ? hora >= VENTANA_INICIO && hora < VENTANA_FIN
+  : hora >= VENTANA_INICIO || hora < VENTANA_FIN;
 ```
 
 ### 3.4 Comprobación periódica
@@ -148,11 +159,28 @@ demonio, no tiene bucle interno, no duerme. La periodicidad la pone quien lo
 lanza (§7.3). Esto permite que el mismo fichero, sin cambios, corra tanto en
 GitHub Actions como en un ordenador de casa.
 
-Cadencia: cada **5 minutos** dentro de la ventana activa. Cinco minutos es el
-intervalo mínimo que admite el planificador de GitHub Actions, y en la práctica
-sus ejecuciones programadas se retrasan con frecuencia; asúmase que el margen
-real es de 5 a 15 minutos. Para el caso de uso —enterarse de una reposición en
-rebajas— es indistinguible de 2 minutos.
+Cadencia: cada **5 minutos** dentro de la ventana activa. Para el caso de uso
+—enterarse de una reposición en rebajas— es indistinguible de 2 minutos.
+
+**Esos 5 minutos no los marca el `schedule` de GitHub Actions.** Su planificador
+es *best effort*: no solo retrasa los eventos programados, sino que descarta la
+mayoría. Medido en este repo con `cron: '*/5'`, de ~50 disparos esperados en 4
+horas se entregaron **2**, ambos al mismo segundo exacto y con dos horas de
+separación. Un `*/5` de GitHub no es una ronda cada 5 minutos: es una ronda cada
+hora o dos, y no es configurable.
+
+Por eso el cron es **horario** (un solo disparo, con muchas más probabilidades de
+llegar) y las rondas de 5 minutos las marca un bucle dentro del propio job: 10
+rondas espaciadas 5 minutos, ~45 minutos de cobertura por disparo. Si GitHub se
+salta un disparo se pierde una hora, no el día entero.
+
+Ese bucle vive en `.github/workflows/checker.yml`, **no en `checker.js`**, que
+sigue siendo de un solo disparo. Es lo que permite que el mismo fichero, sin
+cambios, siga valiendo para el alojamiento B (§7.3), donde la periodicidad la
+pone `systemd` y no hay bucle ninguno.
+
+`workflow_dispatch` ejecuta **una sola ronda**, no el bucle: es el mecanismo para
+forzar una comprobación inmediata (§4.1) y bloquearlo 45 minutos lo inutilizaría.
 
 Cada ronda, `checker.js`:
 
@@ -216,7 +244,7 @@ Navegador ──► Worker ──► D1 (SQLite)
                  ▲
                  │ GET /api/status, GET /api/items, POST /api/check-results
                  │
-checker.js (cada 5 min, ventana 08:00–23:00) ──► Puppeteer headless ──► zara.com
+checker.js (cada 5 min, ventana 08:00–01:00) ──► Puppeteer headless ──► zara.com
                  │
                  (el Worker, no checker.js, habla con:)
                  └──► Resend API ──► correo
@@ -405,7 +433,9 @@ dónde se ejecute**. Hay dos alojamientos soportados y el orden importa:
 runners estándar son gratis y sin límite de minutos, y un runner `ubuntu-latest`
 ejecuta Puppeteer sin ninguna preparación especial. Cero hardware, cero
 consumo eléctrico, cero mantenimiento. Fichero
-`.github/workflows/checker.yml`, `schedule` cada 5 minutos.
+`.github/workflows/checker.yml`, `schedule` horario + bucle de 10 rondas de 5
+minutos dentro del job (§3.4: un `*/5` no funciona, GitHub descarta casi todos
+los disparos).
 
 **Riesgo no verificado:** los runners salen por IPs de Azure y Akamai podría
 rechazarlas. Es incierto y hay indicios de que no ocurrirá —el discriminante
@@ -482,11 +512,13 @@ Solo donde aportan. Con `vitest`:
   con `"37"`, `"38"` no casa con `"37"`.
 - `decidirNotificacion(anterior, actual)`: solo `false → true` devuelve `true`.
   Un error deja el estado intacto.
-- `dentroDeVentana(fecha)`: con la ventana 08:00–23:00, `true` a las 08:00 y a
-  las 22:59 hora de Madrid, `false` a las 07:59 y a las 23:00. **Incluir un caso
-  en horario de verano y otro en horario de invierno** (p. ej. 1 de julio y 1 de
-  enero a la misma hora UTC) para verificar que el cambio de hora se maneja
-  solo. Es el único punto del código donde una zona horaria puede morder.
+- `dentroDeVentana(fecha)`: con la ventana 08:00–01:00, `true` a las 08:00 y a
+  las 23:59 hora de Madrid, `false` a las 07:59 y a la 01:00. Como la ventana
+  cruza la medianoche, los casos de después de las 00:00 son obligatorios.
+  **Incluir un caso en horario de verano y otro en horario de invierno** (p. ej.
+  1 de julio y 1 de enero a la misma hora UTC) para verificar que el cambio de
+  hora se maneja solo. Es el único punto del código donde una zona horaria puede
+  morder.
 
 No se testea la llamada real a Zara/Bershka ni el envío de correo. Se
 comprueban a mano.
@@ -510,7 +542,7 @@ comprueban a mano.
    `paused = 1`, una ejecución manual de `checker.js` termina sin abrir
    Puppeteer.
 8. **Ventana horaria:** forzando la hora (o con los tests de `dentroDeVentana`),
-   `GET /api/status` devuelve `run: false` fuera de 08:00–23:00 Madrid, y
+   `GET /api/status` devuelve `run: false` fuera de 08:00–01:00 Madrid, y
    `checker.js` sale sin tocar Zara.
 9. **Token:** un `POST /api/check-results` sin la cabecera `X-Checker-Token`, o
    con un valor incorrecto, devuelve 401.
@@ -535,8 +567,10 @@ algo para descubrir que el correo no salía no es un plan de pruebas.
 | Consulta a Zara desde `checker.js` (Puppeteer), no desde el Worker | Confirmado en el paso 0 (`ZARA-API.md`): Zara bloquea con un challenge de Akamai cualquier petición sin navegador real ejecutando JS; un Worker no puede lanzar uno. Puppeteer headless sí lo pasa (probado 4/4) |
 | Alta de artículo asíncrona (`Pendiente` → verificado en la siguiente ronda) | Consecuencia directa de la anterior: el Worker no puede validar la talla al momento porque no puede consultar Zara |
 | `checker.js` de un solo disparo, sin bucle | Con rondas de 5 minutos, un proceso permanente durmiendo es código de más. Permite que el mismo fichero corra en GitHub Actions y en un ordenador propio sin cambios |
-| Intervalo de 5 minutos (antes 120 s) | Es el mínimo del planificador de GitHub Actions. Con 6 artículos y ventana de 15 h, ~11.000 peticiones/mes frente a las ~130.000 del plan original: menos exposición al detector de bots sin pérdida práctica |
-| Ventana 08:00–23:00 Madrid | ~9 h diarias en las que un correo no se lee. Elimina un tercio del tráfico sin coste funcional |
+| Intervalo de 5 minutos (antes 120 s) | Menos exposición al detector de bots sin pérdida práctica: enterarse de una reposición 5 minutos más tarde da igual |
+| Cron horario + bucle en el job, en vez de `cron: '*/5'` | Medido: GitHub entregó 2 de ~50 disparos esperados de un `*/5` en 4 horas. Su planificador descarta la mayoría de los eventos programados y no es configurable. Un solo disparo horario sí llega, y el bucle reparte las rondas dentro del job |
+| El bucle en el YAML, no en `checker.js` | `checker.js` sigue siendo de un solo disparo y sin estado, así que el alojamiento B (`systemd`, §7.3) lo usa sin cambios. Meter el bucle en el script rompería eso |
+| Ventana 08:00–01:00 Madrid | ~7 h diarias en las que un correo no se lee. Quita tráfico nocturno sin coste funcional |
 | Ventana y pausa calculadas en el Worker | Un único sitio para la lógica; el cambio de hora CET/CEST lo resuelve `Intl`; funciona igual con cualquier alojamiento del checker |
 | PIN de 4 dígitos en la pausa | Evita cambiar el interruptor por un toque accidental en el móvil. **No es seguridad**: la app no tiene login y borrar no pide PIN |
 | Sin `POST /api/check` ni botón "Comprobar ahora" | Con rondas de 5 minutos solo podría dejar una señal para el ciclo siguiente. Prometería inmediatez que no puede cumplir; se usa *Run workflow* o `node checker.js` |

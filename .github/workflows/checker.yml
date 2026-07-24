@@ -1,24 +1,32 @@
-# Lanza una ronda de comprobacion cada 5 minutos.
+# Lanza rondas de comprobacion cada 5 minutos.
 #
-# 5 minutos es el intervalo minimo que admite el planificador de GitHub Actions.
-# Las ejecuciones programadas se retrasan con frecuencia; el margen real es de
-# 5 a 15 minutos. Es aceptable para este caso de uso (SPEC.md 3.4).
+# POR QUE UN BUCLE Y NO UN CRON CADA 5 MINUTOS:
+# El planificador de GitHub Actions es "best effort": no solo retrasa los
+# eventos schedule, sino que descarta la mayoria. Medido en este repo con
+# cron '*/5': de ~50 disparos esperados en 4 horas se entregaron 2, ambos
+# a la misma hora exacta y con dos horas de separacion.
+#
+# Por eso el cron es ahora HORARIO (un solo tick, mucho mas probable de que
+# llegue) y las rondas de 5 minutos las marca un bucle dentro del job: 10
+# rondas espaciadas 5 minutos, ~45 minutos de cobertura por tick. Si GitHub
+# se salta un tick se pierde una hora, no todo el dia.
+#
+# El bucle vive AQUI, no en checker.js, que sigue siendo de un solo disparo
+# (CLAUDE.md, SPEC.md 3.4): el mismo fichero sigue valiendo sin cambios para
+# el alojamiento B (systemd timer en un ordenador propio).
 #
 # Las horas son UTC. El rango 6-23 es un SUPERCONJUNTO de la ventana
 # 08:00-01:00 de Madrid, valido tanto en horario de verano (UTC+2) como de
 # invierno (UTC+1). Es solo una optimizacion para no arrancar runners de
 # madrugada: la decision de verdad la toma el Worker en GET /api/status, que es
 # quien conoce la ventana real. No dupliques aqui la logica de horarios.
-#
-# (Sin cambios funcionales: retoque para forzar que GitHub reindexe este
-# workflow tras habilitar Actions en el repo.)
 
 name: checker
 
 on:
   schedule:
-    - cron: '*/5 6-23 * * *'
-  workflow_dispatch:        # boton "Run workflow" para forzar una ronda a mano
+    - cron: '0 6-23 * * *'
+  workflow_dispatch:        # boton "Run workflow" para forzar UNA ronda a mano
 
 concurrency:
   group: checker
@@ -27,7 +35,9 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5       # una ronda que se atasca no bloquea a las demas
+    # 55 < 60: el job termina siempre antes del siguiente tick horario, asi
+    # el grupo de concurrencia nunca se queda bloqueado.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
 
@@ -42,4 +52,22 @@ jobs:
         env:
           WORKER_URL: ${{ secrets.WORKER_URL }}
           CHECKER_TOKEN: ${{ secrets.CHECKER_TOKEN }}
-        run: node checker.js
+          # Lanzado a mano: una sola ronda, para que "Run workflow" siga
+          # sirviendo para forzar una comprobacion inmediata.
+          RONDAS: ${{ github.event_name == 'schedule' && 10 || 1 }}
+        run: |
+          inicio=$(date +%s)
+          ronda=0
+          while :; do
+            ronda=$(( ronda + 1 ))
+            echo "::group::Ronda $ronda de $RONDAS"
+            # timeout: una ronda colgada no puede comerse el hueco de las
+            # siguientes. checker.js no cambia estado si falla (SPEC.md 3.4).
+            timeout 240 node checker.js || echo "Ronda $ronda fallida; se continua con la siguiente."
+            echo "::endgroup::"
+            if [ "$ronda" -ge "$RONDAS" ]; then break; fi
+            # Cadencia anclada al inicio, para que lo que tarde cada ronda no
+            # vaya acumulando retraso.
+            espera=$(( inicio + ronda * 300 - $(date +%s) ))
+            if [ "$espera" -gt 0 ]; then sleep "$espera"; fi
+          done
