@@ -9,6 +9,9 @@
 # invierno (UTC+1). Es solo una optimizacion para no arrancar runners de
 # madrugada: la decision de verdad la toma el Worker en GET /api/status, que es
 # quien conoce la ventana real. No dupliques aqui la logica de horarios.
+#
+# (Sin cambios funcionales: retoque para forzar que GitHub reindexe este
+# workflow tras habilitar Actions en el repo.)
 
 name: checker
 
