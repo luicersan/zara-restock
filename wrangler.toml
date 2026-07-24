@@ -4,8 +4,8 @@ compatibility_date = "2026-07-22"
 
 # Sin [triggers]/cron: Zara bloquea cualquier peticion sin navegador real
 # (ZARA-API.md), asi que el Worker no puede consultarla. La comprobacion
-# periodica cada 2 minutos la hace check-local.js desde un ordenador
-# (SPEC.md SS7.3), no un cron de Cloudflare.
+# periodica cada 5 minutos la hace checker.js desde GitHub Actions (o un
+# ordenador propio de respaldo), no un cron de Cloudflare (SPEC.md SS7.3).
 
 # El database_id lo devuelve "npx wrangler d1 create zara-restock".
 # Pegalo aqui antes del primer despliegue.
@@ -14,5 +14,6 @@ binding = "DB"
 database_name = "zara-restock"
 database_id = "b6841186-9931-4b11-a565-771c5546e8b0"
 
-# RESEND_API_KEY NO va aqui. Es un secret:
+# RESEND_API_KEY y CHECKER_TOKEN NO van aqui. Son secrets:
 #   npx wrangler secret put RESEND_API_KEY
+#   npx wrangler secret put CHECKER_TOKEN

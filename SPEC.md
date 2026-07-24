@@ -50,18 +50,21 @@ se puede consultar desde el script local, no desde el Worker). Al dar de alta:
    `last_checked_at`, el artículo se muestra como **`Pendiente`** en el
    listado (§3.2): no se sabe todavía si la talla existe ni si está
    disponible.
-3. La primera comprobación real la hace el script local en su siguiente
-   ronda (hasta 120 segundos después). Si la talla no existe entre las
-   tallas del producto, esa ronda deja el artículo en estado `Error` con un
-   mensaje que incluye la lista de tallas que sí existen — igual que
-   cualquier otro error de comprobación (§3.4). No se borra solo: el usuario
-   lo borra a mano al ver el error.
+3. La primera comprobación real la hace `checker.js` en su siguiente ronda
+   (hasta ~5 minutos después; más si el alta ocurre fuera de la ventana
+   horaria, en cuyo caso el artículo sigue `Pendiente` hasta las 08:00). Si la
+   talla no existe entre las tallas del producto, esa ronda deja el artículo en
+   estado `Error` con un mensaje que incluye la lista de tallas que sí existen —
+   igual que cualquier otro error de comprobación (§3.4). No se borra solo: el
+   usuario lo borra a mano al ver el error.
 
 Esto es una relajación consciente de "no se guardan artículos que no se han
 podido verificar": ahora sí se guardan, y la verificación llega poco después,
-asíncrona. La alternativa (bloquear el alta hasta la siguiente ronda del
-script local) complicaría la interfaz sin aportar nada para dos personas
-vigilando seis artículos.
+asíncrona. La alternativa (bloquear el alta hasta la siguiente ronda) complicaría
+la interfaz sin aportar nada para dos personas vigilando seis artículos.
+
+La interfaz debe dejar claro que `Pendiente` es normal y no un error, y que si
+se añade un artículo de noche no se verificará hasta la mañana siguiente.
 
 ### 3.2 Listado
 
@@ -84,27 +87,77 @@ dejan de funcionar, tiene que verse aquí y no en unos logs que nadie mira.
 
 ### 3.3 Ajustes
 
-Un único campo: la dirección de correo de notificación. Se guarda en base de datos,
-no en una variable de entorno, para poder cambiarla sin redesplegar.
+Tres cosas, todas guardadas en la tabla `settings` (no en variables de entorno,
+para poder cambiarlas sin redesplegar):
 
-Si no hay dirección configurada, las comprobaciones se siguen ejecutando y el
-estado se sigue actualizando, pero no se envía correo. La interfaz avisa de que
-no hay dirección configurada.
+**Dirección de notificación.** Si no hay dirección configurada, las
+comprobaciones se siguen ejecutando y el estado se sigue actualizando, pero no
+se envía correo. La interfaz avisa de que no hay dirección configurada.
+
+**Interruptor de pausa, protegido por PIN.** Un botón `Pausar` / `Reanudar` en
+la interfaz. Al pulsarlo se pide un PIN de 4 dígitos; si coincide con
+`settings.pause_pin`, se cambia `settings.paused`. Sirve para vacaciones o para
+un día en que no interesa que corra nada.
+
+El PIN **no es un mecanismo de seguridad** y no debe presentarse como tal: la
+aplicación no tiene autenticación y cualquiera que llegue a la URL puede borrar
+artículos sin PIN alguno. Su única función es evitar cambiar el estado por un
+toque accidental en el móvil. Comparación directa de cadenas en el Worker, sin
+hash, sin sesiones, sin límite de intentos.
+
+**Ventana horaria activa.** Fuera de ella no se consulta a Zara. Por defecto
+**08:00–23:00 hora de Madrid**, definida como dos constantes en el código
+(`VENTANA_INICIO = 8`, `VENTANA_FIN = 23`). No se expone en la interfaz: se
+cambia en el código y se redespliega.
+
+Motivo: las horas de sueño son ~9 de cada 24 en las que un correo no se va a
+leer, y cada consulta nocturna es tráfico contra el detector de bots de Zara sin
+ninguna contrapartida. Reduce la exposición en torno a un tercio.
+
+**El cálculo de ventana y pausa vive en el Worker, en un solo sitio**, expuesto
+en `GET /api/status` (§4.1). El checker no sabe nada de horarios: pregunta y
+obedece. Así la lógica no se duplica, funciona igual desde GitHub Actions o
+desde el portátil, y el cambio de hora CET/CEST lo resuelve `Intl` sin código
+propio:
+
+```js
+const horaMadrid = Number(new Intl.DateTimeFormat("es-ES", {
+  timeZone: "Europe/Madrid", hour: "numeric", hour12: false,
+}).format(new Date()));
+const dentroDeVentana = horaMadrid >= VENTANA_INICIO && horaMadrid < VENTANA_FIN;
+```
 
 ### 3.4 Comprobación periódica
 
 **No es un cron del Worker.** Por lo explicado en §7, la comprobación real
-contra Zara la hace un proceso en un ordenador (`check-local.js`), no el
-Worker. El Worker no pierde su papel de decidir y notificar: solo deja de ser
-quien habla con Zara.
+contra Zara la hace `checker.js`, un script de Node con Puppeteer que corre
+fuera de Cloudflare. El Worker no pierde su papel de decidir y notificar: solo
+deja de ser quien habla con Zara.
 
-Cada **120 segundos**, `check-local.js`:
+`checker.js` es **de un solo disparo**: hace una ronda y termina. No es un
+demonio, no tiene bucle interno, no duerme. La periodicidad la pone quien lo
+lanza (§7.3). Esto permite que el mismo fichero, sin cambios, corra tanto en
+GitHub Actions como en un ordenador de casa.
 
-1. Pide a la API del Worker (`GET /api/items`) la lista de artículos vigilados.
-2. Para cada uno, en serie, consulta su disponibilidad real en Zara (vía
-   Puppeteer headless, §7).
-3. Envía el resultado de cada artículo (disponibilidad cruda y, si ha
-   fallado, el error) al Worker (`POST /api/check-results`, §4.1).
+Cadencia: cada **5 minutos** dentro de la ventana activa. Cinco minutos es el
+intervalo mínimo que admite el planificador de GitHub Actions, y en la práctica
+sus ejecuciones programadas se retrasan con frecuencia; asúmase que el margen
+real es de 5 a 15 minutos. Para el caso de uso —enterarse de una reposición en
+rebajas— es indistinguible de 2 minutos.
+
+Cada ronda, `checker.js`:
+
+1. Llama a `GET /api/status`. **Si `run` es `false` (por pausa o por estar
+   fuera de la ventana horaria), termina inmediatamente sin abrir Puppeteer ni
+   tocar zara.com.** Esta es la primera instrucción del script: nada se lanza
+   antes de saber si hay que trabajar.
+2. Pide a la API del Worker (`GET /api/items`) la lista de artículos vigilados.
+3. Para cada uno, en serie, consulta su disponibilidad real en Zara (vía
+   Puppeteer headless, §7), reutilizando una única instancia del navegador para
+   todos los artículos de la ronda.
+4. Envía el resultado de cada artículo (disponibilidad cruda y, si ha
+   fallado, el error) al Worker (`POST /api/check-results`, §4.1), con la
+   cabecera `X-Checker-Token` (§4.2).
 
 El Worker, al recibir cada resultado:
 
@@ -123,18 +176,17 @@ Reglas (se mantienen igual, solo cambia quién habla con Zara):
 - Se envía correo **solo en la transición agotado → disponible**. Si sigue
   disponible en las siguientes rondas, no se repite el correo. Si vuelve a
   agotarse y se repone otra vez, se avisa de nuevo.
-- Un fallo de red o un error de Zara (incluido el propio `check-local.js`, p.
-  ej. si Puppeteer no consigue cargar la página) **no cambia** el estado de
-  disponibilidad: se registra en `last_error` y se reintenta a los 120
-  segundos. Un 503 puntual no debe provocar un correo espurio ni borrar el
-  estado conocido.
+- Un fallo de red o un error de Zara (incluido el propio `checker.js`, p. ej.
+  si Puppeteer no consigue cargar la página) **no cambia** el estado de
+  disponibilidad: se registra en `last_error` y se reintenta en la siguiente
+  ronda. Un 503 puntual no debe provocar un correo espurio ni borrar el estado
+  conocido.
 - Un error en un artículo no interrumpe el recorrido de los demás.
 - Si el envío del correo falla, el estado `available` **no** se marca como
   actualizado, para que el siguiente ciclo reintente la notificación.
 
-Requiere que el ordenador con `check-local.js` esté encendido. Es la
-contrapartida de que Zara bloquee las peticiones sin navegador real (§7,
-`ZARA-API.md`).
+Dónde corre `checker.js` (GitHub Actions o un ordenador propio) es una decisión
+de despliegue, no de arquitectura: §7.3 y `DESPLIEGUE.md`.
 
 ### 3.5 Correo
 
@@ -147,32 +199,34 @@ Un correo por artículo repuesto.
 
 ## 4. Arquitectura
 
-Un único Cloudflare Worker que sirve la interfaz y la API, más un script de
-Node (`check-local.js`) en un ordenador que es el único que habla con Zara.
+Dos piezas. Un Cloudflare Worker que sirve la interfaz, la API y el correo, y un
+script de Node (`checker.js`) que es el único que habla con Zara.
 
 ```
 Navegador ──► Worker ──► D1 (SQLite)
                  ▲
-                 │ GET /api/items, POST /api/check-results
+                 │ GET /api/status, GET /api/items, POST /api/check-results
                  │
-check-local.js (cada 120s) ──► Puppeteer headless ──► zara.com
+checker.js (cada 5 min, ventana 08:00–23:00) ──► Puppeteer headless ──► zara.com
                  │
-                 (el Worker, no check-local.js, habla con:)
+                 (el Worker, no checker.js, habla con:)
                  └──► Resend API ──► correo
 ```
 
 Zara bloquea con un challenge de Akamai cualquier petición que no venga de un
-navegador real ejecutando JavaScript (`ZARA-API.md`); un Worker no puede
-lanzar un navegador. Por eso la consulta se hace desde un ordenador con
-`check-local.js` y no desde el propio Worker. El Worker sigue siendo el único
-que decide si hay que notificar y el único que envía correo (mantiene
-`RESEND_API_KEY`, que `check-local.js` no necesita ni ve).
+navegador real ejecutando JavaScript (`ZARA-API.md`); un Worker no puede lanzar
+un navegador. Por eso la consulta se hace desde `checker.js` y no desde el
+propio Worker. El Worker sigue siendo el único que decide si hay que notificar,
+el único que calcula la ventana horaria y el estado de pausa, y el único que
+envía correo (mantiene `RESEND_API_KEY`, que `checker.js` no necesita ni ve).
 
 - **Sin build de frontend.** La interfaz es una cadena HTML devuelta por el Worker,
   con JavaScript vanilla en un `<script>` en línea. Sin React, sin Tailwind,
   sin bundler, sin `npm run build`.
-- **Sin autenticación.** La URL es pública. Decisión consciente del propietario:
-  no hay datos sensibles.
+- **Sin autenticación de usuario.** La URL es pública. Decisión consciente del
+  propietario: no hay datos sensibles. El PIN de pausa (§3.3) y el token del
+  checker (§4.2) no contradicen esto: el primero evita pulsaciones accidentales,
+  el segundo protege un endpoint de escritura concreto.
 - **JavaScript, no TypeScript.** Menos fricción para una aplicación de este tamaño.
 
 ### 4.1 API
@@ -180,18 +234,36 @@ que decide si hay que notificar y el único que envía correo (mantiene
 | Método | Ruta | Descripción |
 |---|---|---|
 | GET | `/` | La interfaz |
-| GET | `/api/items` | Lista de artículos. La usan tanto la interfaz como `check-local.js` |
+| GET | `/api/status` | `{ run, paused, dentro_de_ventana, hora_madrid }`. `run` es `true` solo si no está en pausa **y** se está dentro de la ventana. Lo consulta `checker.js` antes de nada (§3.4) y la interfaz para pintar el estado |
+| GET | `/api/items` | Lista de artículos. La usan tanto la interfaz como `checker.js` |
 | POST | `/api/items` | Alta. Cuerpo: `{ url, size }`. Guarda en `Pendiente`, sin consultar Zara (§3.1) |
 | DELETE | `/api/items/:id` | Borrado |
-| GET | `/api/settings` | `{ email }` |
+| GET | `/api/settings` | `{ email, paused }`. **Nunca devuelve `pause_pin`** |
 | PUT | `/api/settings` | Cuerpo: `{ email }` |
-| POST | `/api/check` | Marca una señal (`check_requested` en `settings`) para que `check-local.js` haga una ronda en cuanto la vea, sin esperar a completar los 120s en curso |
-| POST | `/api/check-results` | Usado por `check-local.js`. Cuerpo: lista de resultados crudos por artículo (disponibilidad o error). El Worker aplica aquí la lógica de transición y el envío de correo |
+| POST | `/api/pause` | Cuerpo: `{ paused, pin }`. Cambia el interruptor si el PIN coincide; si no, 403 y un mensaje legible |
+| POST | `/api/check-results` | Usado por `checker.js`. Requiere `X-Checker-Token` (§4.2). Cuerpo: lista de resultados crudos por artículo. El Worker aplica aquí la lógica de transición y el envío de correo |
 
-`POST /api/check` **no** ejecuta una comprobación inmediata (el Worker no
-puede consultar Zara). Es una señal para `check-local.js`, que la revisa en
-cada vuelta de su bucle; la comprobación real llega en cuanto ese proceso la
-atiende, no al instante.
+No existe `POST /api/check` ni botón "Comprobar ahora". Con una ronda cada 5
+minutos, un botón que solo deja una señal para que la recoja el siguiente ciclo
+promete inmediatez que no puede cumplir. Para forzar una ronda: el botón
+*Run workflow* de GitHub Actions, o `node checker.js` a mano.
+
+### 4.2 Token del checker
+
+`POST /api/check-results` es el único endpoint que escribe estado de
+disponibilidad y puede desencadenar un correo. Como el repositorio es público
+(§7.3) y la URL del Worker es descubrible, sin protección cualquiera podría
+inyectar resultados falsos y provocar avisos de reposición inexistentes.
+
+Mecanismo, deliberadamente mínimo:
+
+- Un valor aleatorio largo guardado como secret de Cloudflare (`CHECKER_TOKEN`)
+  y como GitHub Secret con el mismo nombre.
+- `checker.js` lo envía en la cabecera `X-Checker-Token`.
+- El Worker compara y devuelve 401 si no coincide.
+
+Sin JWT, sin firmas, sin caducidad. La URL del Worker también va en un GitHub
+Secret (`WORKER_URL`), no escrita en el fichero del workflow.
 
 ## 5. Formato de las URL de Zara
 
@@ -237,17 +309,19 @@ por eso está aislado en `src/zara.js` con la firma:
 export async function fetchProduct(productId, variantId)
 ```
 
-Todo lo demás de la aplicación consume esta función y no sabe nada de cómo
-funciona Zara por dentro. Si Zara cambia su web, se toca este fichero y ninguno más.
+Vive en `src/zara-fetch.js`, separado de `src/zara.js` por la razón que explica
+`CLAUDE.md`. Todo lo demás de la aplicación consume esta función y no sabe nada
+de cómo funciona Zara por dentro. Si Zara cambia su web, se toca este fichero y
+ninguno más.
 
 **Confirmado en el paso 0 (`ZARA-API.md`): Zara bloquea con un challenge de
 Akamai cualquier petición que no sea un navegador real ejecutando JavaScript.**
 `curl`/`fetch` nunca lo pasan, ni siquiera desde una IP residencial normal —no
 solo desde IPs de centro de datos, que era la única hipótesis contemplada
 aquí originalmente. Un Cloudflare Worker no puede lanzar un navegador, así
-que **`fetchProduct()` no puede ejecutarse dentro del Worker**. Vive en
-`check-local.js` (un script de Node que sí puede lanzar Chromium headless vía
-Puppeteer) y usa el mismo `src/zara.js` para todo lo que no depende del
+que **`fetchProduct()` no puede ejecutarse dentro del Worker**. Lo invoca
+`checker.js` (un script de Node que sí puede lanzar Chromium headless vía
+Puppeteer), que usa el mismo `src/zara.js` para todo lo que no depende del
 entorno (parseo de URL, normalización de tallas). Ver §4 y §3.4.
 
 ### 7.1 Paso 0: descubrimiento (antes de escribir nada de la aplicación) — hecho
@@ -266,20 +340,41 @@ el JSON embebido), un ejemplo recortado de la respuesta, y de qué campos se
 sacan el nombre, la etiqueta de talla y el estado. Sin esto, el día que se
 rompa hay que repetir toda la investigación desde cero.
 
-### 7.3 Consulta desde un ordenador, no desde el Worker
+### 7.3 Dónde corre `checker.js`
 
 Esto ya no es un plan de contingencia ("si Cloudflare está bloqueado"): es la
-arquitectura desde el principio, porque el bloqueo de Akamai no depende de si
-la IP es de datacenter o residencial, sino de si quien pregunta ejecuta
-JavaScript de verdad (§7, `ZARA-API.md`).
+arquitectura desde el principio, porque el bloqueo de Akamai no depende de si la
+IP es de datacenter o residencial, sino de si quien pregunta ejecuta JavaScript
+de verdad (§7, `ZARA-API.md`).
 
-Documentado en `DESPLIEGUE.md`: una tarea programada (o un proceso de larga
-duración) en el ordenador local ejecuta `check-local.js`, que usa `src/zara.js`
-y Puppeteer, y envía los resultados a `POST /api/check-results` del Worker
-(§4.1). El Worker no tiene `[triggers]` de cron para esto: la periodicidad la
-marca `check-local.js`.
+`checker.js` es de un solo disparo y no guarda estado, así que **le da igual
+dónde se ejecute**. Hay dos alojamientos soportados y el orden importa:
 
-Requiere el ordenador encendido. Es la contrapartida aceptada.
+**Opción A — GitHub Actions (probar primero).** En repositorios públicos los
+runners estándar son gratis y sin límite de minutos, y un runner `ubuntu-latest`
+ejecuta Puppeteer sin ninguna preparación especial. Cero hardware, cero
+consumo eléctrico, cero mantenimiento. Fichero
+`.github/workflows/checker.yml`, `schedule` cada 5 minutos.
+
+**Riesgo no verificado:** los runners salen por IPs de Azure y Akamai podría
+rechazarlas. Es incierto y hay indicios de que no ocurrirá —el discriminante
+observado en el paso 0 fue la ejecución de JavaScript, no la procedencia de la
+IP, ya que `curl` también fallaba desde IP residencial—, pero no está probado.
+**Es lo primero que hay que comprobar, y cuesta veinte minutos.** Si el
+workflow devuelve el challenge de Akamai en vez de la ficha de producto, se pasa
+a la opción B sin tocar una línea de la aplicación.
+
+Consecuencia de la opción A: **el repositorio tiene que ser público** para que
+los minutos sean ilimitados. De ahí el token de §4.2. En el repo no puede haber
+ni la URL del Worker, ni la clave de Resend, ni el token, ni el PIN: todo eso
+son secrets.
+
+**Opción B — un ordenador propio (respaldo).** Un portátil antiguo con Linux y
+un `systemd timer` cada 5 minutos que lanza `node checker.js`. Requiere la
+máquina encendida y unos 20 €/año de electricidad. Ver `DESPLIEGUE.md`.
+
+Ninguna de las dos opciones cambia el Worker, la base de datos, la interfaz ni
+`checker.js`. Cambia únicamente quién lo lanza y cada cuánto.
 
 ## 8. Modelo de datos
 
@@ -305,8 +400,19 @@ CREATE TABLE settings (
 );
 ```
 
+Claves de `settings`:
+
+| Clave | Valor | Notas |
+|---|---|---|
+| `notification_email` | dirección de correo | Vacía al arrancar |
+| `paused` | `'0'` o `'1'` | Interruptor de pausa (§3.3) |
+| `pause_pin` | 4 dígitos | Sembrado a `'0000'`. **Cambiarlo en el primer arranque** |
+
 El índice único evita duplicados al añadir dos veces el mismo artículo y talla. La
 interfaz debe traducir la violación de restricción a un mensaje legible, no a un 500.
+
+`GET /api/settings` nunca devuelve `pause_pin`. No es un secreto de peso (§3.3),
+pero no hay razón para servirlo.
 
 Fechas en ISO 8601 UTC. La conversión a horario de Madrid se hace al pintar.
 
@@ -320,26 +426,43 @@ Solo donde aportan. Con `vitest`:
   con `"37"`, `"38"` no casa con `"37"`.
 - `decidirNotificacion(anterior, actual)`: solo `false → true` devuelve `true`.
   Un error deja el estado intacto.
+- `dentroDeVentana(fecha)`: con la ventana 08:00–23:00, `true` a las 08:00 y a
+  las 22:59 hora de Madrid, `false` a las 07:59 y a las 23:00. **Incluir un caso
+  en horario de verano y otro en horario de invierno** (p. ej. 1 de julio y 1 de
+  enero a la misma hora UTC) para verificar que el cambio de hora se maneja
+  solo. Es el único punto del código donde una zona horaria puede morder.
 
 No se testea la llamada real a Zara ni el envío de correo. Se comprueban a mano.
 
 ## 10. Criterio de terminado
 
 1. `wrangler deploy` sin errores y la interfaz carga en la URL `workers.dev`.
-2. `check-local.js` corriendo en el ordenador: los 5 artículos de `seed.sql`
-   pasan de `Pendiente` a su estado real, con su hora de comprobación, en la
-   siguiente ronda.
-3. Añadir una talla inexistente se guarda como `Pendiente` y pasa a `Error`
-   con la lista de tallas válidas en la siguiente ronda de `check-local.js`
-   (hasta 120 segundos, no al instante — §3.1).
-4. Borrar funciona.
-5. Guardar el correo funciona y persiste al recargar.
-6. Prueba de correo de extremo a extremo: se añade a mano un artículo **que esté
-   disponible ahora mismo**, se le fuerza `available = 0` en la base de datos
-   (`wrangler d1 execute`), se llama a `POST /api/check` (o simplemente se
-   espera a la siguiente ronda de `check-local.js`) y llega el correo.
+2. **Prueba del alojamiento (lo primero de todo, §7.3):** el workflow de GitHub
+   Actions, lanzado a mano con *Run workflow*, consigue el nombre y las tallas
+   de un artículo. Si devuelve el challenge de Akamai, se pasa a la opción B
+   antes de seguir.
+3. `checker.js` corriendo: los 5 artículos de `seed.sql` pasan de `Pendiente` a
+   su estado real, con su hora de comprobación, en la siguiente ronda.
+4. Añadir una talla inexistente se guarda como `Pendiente` y pasa a `Error` con
+   la lista de tallas válidas en la siguiente ronda (hasta ~5 minutos, no al
+   instante — §3.1).
+5. Borrar funciona.
+6. Guardar el correo funciona y persiste al recargar.
+7. **Pausa:** con el PIN correcto el interruptor cambia y la interfaz lo
+   refleja; con un PIN incorrecto se rechaza con un mensaje legible. Con
+   `paused = 1`, una ejecución manual de `checker.js` termina sin abrir
+   Puppeteer.
+8. **Ventana horaria:** forzando la hora (o con los tests de `dentroDeVentana`),
+   `GET /api/status` devuelve `run: false` fuera de 08:00–23:00 Madrid, y
+   `checker.js` sale sin tocar Zara.
+9. **Token:** un `POST /api/check-results` sin la cabecera `X-Checker-Token`, o
+   con un valor incorrecto, devuelve 401.
+10. **Prueba de correo de extremo a extremo:** se añade a mano un artículo **que
+    esté disponible ahora mismo**, se le fuerza `available = 0` en la base de
+    datos (`wrangler d1 execute`), se lanza una ronda de `checker.js` y llega el
+    correo.
 
-El punto 6 es el que de verdad valida la aplicación. Esperar a que Zara reponga
+El punto 10 es el que de verdad valida la aplicación. Esperar a que Zara reponga
 algo para descubrir que el correo no salía no es un plan de pruebas.
 
 ## 11. Decisiones tomadas y por qué
@@ -348,12 +471,18 @@ algo para descubrir que el correo no salía no es un plan de pruebas.
 |---|---|
 | Cloudflare Workers | Sirve interfaz y API gratis, sin servidor que administrar; no se duerme por inactividad |
 | D1 | SQLite gestionado, gratis, sin servidor que administrar |
-| Sin build de frontend | Es lo que permite tenerlo desplegado en una hora |
-| Intervalo de 120 s | ~4.300 peticiones/día con 6 artículos: suficientemente rápido sin llamar la atención |
-| Sin autenticación | Decisión del propietario; no hay datos sensibles |
+| Sin build de frontend | Es lo que permite tenerlo desplegado en una tarde |
+| Sin autenticación de usuario | Decisión del propietario; no hay datos sensibles |
 | Resend | Única API HTTP de correo con alta instantánea; los Workers no pueden hablar SMTP |
 | Cuenta de Resend a nombre de la destinataria | Sin dominio verificado, Resend solo envía a la dirección de la cuenta |
-| Consulta a Zara desde `check-local.js` (Puppeteer), no desde el Worker | Confirmado en el paso 0 (`ZARA-API.md`): Zara bloquea con un challenge de Akamai cualquier petición sin navegador real ejecutando JS; un Worker no puede lanzar uno. Puppeteer headless sí lo pasa (probado 4/4) |
+| Consulta a Zara desde `checker.js` (Puppeteer), no desde el Worker | Confirmado en el paso 0 (`ZARA-API.md`): Zara bloquea con un challenge de Akamai cualquier petición sin navegador real ejecutando JS; un Worker no puede lanzar uno. Puppeteer headless sí lo pasa (probado 4/4) |
 | Alta de artículo asíncrona (`Pendiente` → verificado en la siguiente ronda) | Consecuencia directa de la anterior: el Worker no puede validar la talla al momento porque no puede consultar Zara |
-| `POST /api/check` marca una señal en vez de comprobar al instante | Misma razón: la comprobación real solo la puede hacer `check-local.js`, no el Worker que atiende la petición |
+| `checker.js` de un solo disparo, sin bucle | Con rondas de 5 minutos, un proceso permanente durmiendo es código de más. Permite que el mismo fichero corra en GitHub Actions y en un ordenador propio sin cambios |
+| Intervalo de 5 minutos (antes 120 s) | Es el mínimo del planificador de GitHub Actions. Con 6 artículos y ventana de 15 h, ~11.000 peticiones/mes frente a las ~130.000 del plan original: menos exposición al detector de bots sin pérdida práctica |
+| Ventana 08:00–23:00 Madrid | ~9 h diarias en las que un correo no se lee. Elimina un tercio del tráfico sin coste funcional |
+| Ventana y pausa calculadas en el Worker | Un único sitio para la lógica; el cambio de hora CET/CEST lo resuelve `Intl`; funciona igual con cualquier alojamiento del checker |
+| PIN de 4 dígitos en la pausa | Evita cambiar el interruptor por un toque accidental en el móvil. **No es seguridad**: la app no tiene login y borrar no pide PIN |
+| Sin `POST /api/check` ni botón "Comprobar ahora" | Con rondas de 5 minutos solo podría dejar una señal para el ciclo siguiente. Prometería inmediatez que no puede cumplir; se usa *Run workflow* o `node checker.js` |
+| Token compartido en `/api/check-results` | El repo es público y la URL del Worker es descubrible; sin token, un tercero puede inyectar disponibilidad falsa y provocar correos espurios |
+| GitHub Actions antes que hardware propio | Gratis, sin mantenimiento y sin consumo. Solo se pasa al ordenador propio si Akamai rechaza las IPs de los runners |
 | Tallas como cadenas, sin tipos | Elimina toda la lógica de rangos de tallas sin perder funcionalidad |

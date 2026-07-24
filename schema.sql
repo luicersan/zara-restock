@@ -14,7 +14,7 @@ CREATE TABLE items (
   size            TEXT    NOT NULL,              -- etiqueta de talla normalizada
   name            TEXT,                          -- nombre cacheado, para el correo
   available       INTEGER NOT NULL DEFAULT 0,    -- 0 agotado, 1 disponible
-  last_checked_at TEXT,                          -- ISO 8601 UTC
+  last_checked_at TEXT,                          -- ISO 8601 UTC. NULL => "Pendiente"
   last_error      TEXT,                          -- NULL si la ultima comprobacion fue bien
   created_at      TEXT    NOT NULL
 );
@@ -27,4 +27,10 @@ CREATE TABLE settings (
   value TEXT
 );
 
-INSERT INTO settings (key, value) VALUES ('notification_email', '');
+INSERT INTO settings (key, value) VALUES
+  ('notification_email', ''),
+  ('paused',             '0'),
+  -- PIN de pausa. CAMBIALO EN EL PRIMER ARRANQUE.
+  -- No es un mecanismo de seguridad (SPEC.md 3.3): solo evita pulsaciones
+  -- accidentales. La aplicacion no tiene login y borrar no pide PIN.
+  ('pause_pin',          '0000');

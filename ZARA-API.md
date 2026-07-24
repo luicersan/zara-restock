@@ -30,10 +30,10 @@ Akamai Bot Manager (prueba de trabajo + `bm-verify`). Probado y confirmado:
 
 **Conclusión práctica:** un `fetch()` puro —lo único que puede hacer un
 Cloudflare Worker— nunca pasará este challenge. La única vía que funciona es
-un navegador real ejecutando JavaScript, headless o no. Esto obliga al **Plan
-B de `SPEC.md` §7.3 desde el principio**, no como contingencia futura: la
-consulta a Zara se hace con Puppeteer desde un ordenador, no desde el Worker.
-Ver la sección "Implicación de arquitectura" más abajo y `DESPLIEGUE.md`.
+un navegador real ejecutando JavaScript, headless o no. Esto obliga a que la
+consulta a Zara se haga con Puppeteer desde `checker.js`, no desde el Worker
+(`SPEC.md` §7.3). Ver la sección "Implicación de arquitectura" más abajo y
+`DESPLIEGUE.md`.
 
 ## Método que funciona
 
@@ -77,8 +77,14 @@ bundler de Workers no puede empaquetar. Comprobado con `wrangler dev`:
 que `fetchProduct()`, y el build fallaba con 17 errores de módulos de Node
 no resueltos, aunque `index.js` nunca llama a `fetchProduct()`. La solución
 fue separar: `src/zara.js` sin dependencias (lo usa el Worker), y
-`src/zara-fetch.js` con Puppeteer (solo lo usa `check-local.js`). Ver
+`src/zara-fetch.js` con Puppeteer (solo lo usa `checker.js`). Ver
 `CLAUDE.md`.
+
+`fetchProduct(productId, variantId, browser?)` acepta un tercer argumento
+opcional: una instancia de Puppeteer ya lanzada. `checker.js` la reutiliza
+para toda la ronda (una pestaña por artículo) en vez de arrancar un Chromium
+nuevo por cada uno. Sin ese argumento se comporta igual que antes: lanza y
+cierra su propio navegador.
 
 ## Estructura del JSON (recortada, datos reales)
 
@@ -129,27 +135,22 @@ Si `product.detail.colors` no contiene ningún color con `productId` igual al
 coincida (`SPEC.md` §6), se trata igual que talla inexistente / agotada según
 corresponda.
 
-## Implicación de arquitectura (pendiente de reflejar en `SPEC.md`)
+## Implicación de arquitectura
 
 `src/zara.js` con la firma `fetchProduct(productId, variantId)` **no puede
 ejecutarse dentro del Worker**: Cloudflare Workers no puede lanzar un proceso
-Chromium. La función tiene que vivir en un contexto Node (el script
-`check-local.js` del Plan B), usando Puppeteer.
+Chromium. La función vive en un contexto Node (`checker.js`), usando
+Puppeteer.
 
-Esto afecta a partes de `SPEC.md` que asumían que el Worker consulta a Zara
-directamente:
+Ya reflejado en `SPEC.md` y `DESPLIEGUE.md`:
 
-- **Alta de artículo (§3.1)**: la comprobación síncrona de disponibilidad al
-  dar de alta un artículo no la puede hacer el Worker. Hay que decidir cómo se
-  resuelve (p. ej., que el alta la dispare el script local, o que el alta se
-  guarde "pendiente de verificar" hasta la siguiente ronda del script local).
-- **`POST /api/check` (§4.1)**: dice que "ejecuta exactamente el mismo código
-  que el cron". Si el cron ya no vive en el Worker, este endpoint tiene que
-  pasar a ser una señal hacia el script local, no una comprobación inmediata.
-- **`DESPLIEGUE.md` "Plan B"**: su síntoma descrito ("`curl` funciona desde tu
-  ordenador pero el Worker recibe 403") no es lo que ha pasado — `curl` está
-  bloqueado también en local. El texto de esa sección debe actualizarse.
-
-No se ha tocado `SPEC.md` ni `DESPLIEGUE.md` todavía: son decisiones de
-requisitos, y `CLAUDE.md` pide cambiarlos ahí primero y con el propietario
-delante antes de escribir código.
+- **Alta de artículo (§3.1)**: no hay comprobación síncrona al dar de alta.
+  El artículo se guarda `Pendiente` y `checker.js` lo verifica en su
+  siguiente ronda.
+- No existe `POST /api/check`: con rondas de 5 minutos, una señal para el
+  siguiente ciclo no aporta inmediatez real (`SPEC.md` §4.1). Para forzar una
+  ronda: *Run workflow* en GitHub Actions o `node checker.js` a mano.
+- **Alojamiento de `checker.js`**: GitHub Actions (repo público, minutos
+  ilimitados) como primera opción, con un ordenador propio como respaldo si
+  Akamai rechaza las IPs de los runners. Ver `SPEC.md` §7.3 y
+  `DESPLIEGUE.md`.

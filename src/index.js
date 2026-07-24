@@ -1,10 +1,10 @@
-// fetch() + enrutado. Sin scheduled(): el cron vive en check-local.js
-// (SPEC.md §7.3), no aquí, porque Zara bloquea cualquier petición que no sea
-// un navegador real ejecutando JavaScript (ZARA-API.md).
+// fetch() + enrutado. Sin scheduled(): la comprobación real vive en
+// checker.js (SPEC.md §7.3), no aquí, porque Zara bloquea cualquier petición
+// que no sea un navegador real ejecutando JavaScript (ZARA-API.md).
 
 import { renderUI } from "./ui.js";
 import { normalize, parseUrl } from "./zara.js";
-import { decidirNotificacion } from "./check.js";
+import { decidirNotificacion, dentroDeVentana, horaMadrid } from "./check.js";
 import { sendRestockEmail } from "./mail.js";
 
 function jsonResponse(data, status = 200) {
@@ -39,6 +39,26 @@ async function setSetting(env, key, value) {
     .run();
 }
 
+// El único endpoint que escribe disponibilidad y puede disparar un correo.
+// El repo es público (SPEC.md §7.3/§4.2), así que va protegido con un token
+// compartido en vez de dejarlo abierto.
+function checkerAutorizado(request, env) {
+  const token = request.headers.get("X-Checker-Token");
+  return !!env.CHECKER_TOKEN && token === env.CHECKER_TOKEN;
+}
+
+async function handleStatus(env) {
+  const paused = (await getSetting(env, "paused")) === "1";
+  const dentro = dentroDeVentana();
+  const run = !paused && dentro;
+  return jsonResponse({
+    run,
+    paused,
+    dentro_de_ventana: dentro,
+    hora_madrid: horaMadrid(),
+  });
+}
+
 async function handleListItems(env) {
   const { results } = await env.DB.prepare(
     "SELECT id, url, product_id, variant_id, size, name, available, last_checked_at, last_error, created_at FROM items ORDER BY id"
@@ -57,8 +77,7 @@ async function handleListItems(env) {
     lastError: row.last_error,
   }));
 
-  const checkRequested = (await getSetting(env, "check_requested")) === "true";
-  return jsonResponse({ items, checkRequested });
+  return jsonResponse({ items });
 }
 
 async function handleCreateItem(request, env) {
@@ -107,7 +126,8 @@ async function handleDeleteItem(env, id) {
 
 async function handleGetSettings(env) {
   const email = await getSetting(env, "notification_email");
-  return jsonResponse({ email: email ?? "" });
+  const paused = (await getSetting(env, "paused")) === "1";
+  return jsonResponse({ email: email ?? "", paused });
 }
 
 async function handlePutSettings(request, env) {
@@ -117,12 +137,24 @@ async function handlePutSettings(request, env) {
   return jsonResponse({ email });
 }
 
-async function handleRequestCheck(env) {
-  await setSetting(env, "check_requested", "true");
-  return jsonResponse({ ok: true });
+// El PIN no es un mecanismo de seguridad (SPEC.md §3.3): solo evita cambiar
+// el interruptor por un toque accidental en el móvil. Comparación directa,
+// sin hash ni límite de intentos.
+async function handlePause(request, env) {
+  const body = await request.json();
+  const paused = !!body.paused;
+  const pin = typeof body.pin === "string" ? body.pin : "";
+
+  const pinGuardado = await getSetting(env, "pause_pin");
+  if (pin !== pinGuardado) {
+    return jsonResponse({ error: "PIN incorrecto" }, 403);
+  }
+
+  await setSetting(env, "paused", paused ? "1" : "0");
+  return jsonResponse({ paused });
 }
 
-// Persiste los resultados crudos que envía check-local.js: decide si hay que
+// Persiste los resultados crudos que envía checker.js: decide si hay que
 // avisar (solo transición agotado → disponible, SPEC.md §3.4) y envía el
 // correo antes de dar la comprobación por buena. Un error de Zara nunca toca
 // `available`, solo `last_error`/`last_checked_at` (CLAUDE.md).
@@ -175,7 +207,6 @@ async function handleCheckResults(request, env) {
       .run();
   }
 
-  await setSetting(env, "check_requested", "false");
   return jsonResponse({ ok: true });
 }
 
@@ -188,6 +219,9 @@ export default {
     try {
       if (pathname === "/" && method === "GET") {
         return htmlResponse(renderUI());
+      }
+      if (pathname === "/api/status" && method === "GET") {
+        return await handleStatus(env);
       }
       if (pathname === "/api/items" && method === "GET") {
         return await handleListItems(env);
@@ -205,10 +239,13 @@ export default {
       if (pathname === "/api/settings" && method === "PUT") {
         return await handlePutSettings(request, env);
       }
-      if (pathname === "/api/check" && method === "POST") {
-        return await handleRequestCheck(env);
+      if (pathname === "/api/pause" && method === "POST") {
+        return await handlePause(request, env);
       }
       if (pathname === "/api/check-results" && method === "POST") {
+        if (!checkerAutorizado(request, env)) {
+          return jsonResponse({ error: "No autorizado" }, 401);
+        }
         return await handleCheckResults(request, env);
       }
       return jsonResponse({ error: "No encontrado" }, 404);

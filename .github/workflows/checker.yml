@@ -1,0 +1,42 @@
+# Lanza una ronda de comprobacion cada 5 minutos.
+#
+# 5 minutos es el intervalo minimo que admite el planificador de GitHub Actions.
+# Las ejecuciones programadas se retrasan con frecuencia; el margen real es de
+# 5 a 15 minutos. Es aceptable para este caso de uso (SPEC.md 3.4).
+#
+# Las horas son UTC. El rango 6-22 es un SUPERCONJUNTO de la ventana
+# 08:00-23:00 de Madrid, valido tanto en horario de verano (UTC+2) como de
+# invierno (UTC+1). Es solo una optimizacion para no arrancar runners de
+# madrugada: la decision de verdad la toma el Worker en GET /api/status, que es
+# quien conoce la ventana real. No dupliques aqui la logica de horarios.
+
+name: checker
+
+on:
+  schedule:
+    - cron: '*/5 6-22 * * *'
+  workflow_dispatch:        # boton "Run workflow" para forzar una ronda a mano
+
+concurrency:
+  group: checker
+  cancel-in-progress: false  # si una ronda se alarga, la siguiente espera
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5       # una ronda que se atasca no bloquea a las demas
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Comprobar disponibilidad
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          CHECKER_TOKEN: ${{ secrets.CHECKER_TOKEN }}
+        run: node checker.js

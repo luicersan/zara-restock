@@ -1,0 +1,14 @@
+# Dispara checker.service cada 5 minutos. En este alojamiento el intervalo ya
+# no lo limita GitHub Actions: se puede bajar a 2 minutos cambiando
+# OnUnitActiveSec si se quiere (DESPLIEGUE.md, alojamiento B).
+
+[Unit]
+Description=Lanza checker.service cada 5 minutos
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=checker.service
+
+[Install]
+WantedBy=timers.target

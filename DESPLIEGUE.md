@@ -1,207 +1,177 @@
 # DESPLIEGUE.md
 
+Sustituye por completo a la versión anterior, que daba por hecho un cron de
+Cloudflare y una VM siempre encendida. Ninguna de las dos cosas se usa ya.
+
 ## Antes de empezar
 
-Necesitas, en este orden:
-
-1. **Cuenta de Cloudflare.** `dash.cloudflare.com` → Sign up. Correo y contraseña,
-   verificas el correo. No pide tarjeta y no hace falta dominio: la aplicación
-   vivirá en `zara-restock.TU-SUBDOMINIO.workers.dev`.
+1. **Cuenta de Cloudflare.** `dash.cloudflare.com` → Sign up. No pide tarjeta y
+   no hace falta dominio: la aplicación vivirá en
+   `zara-restock.TU-SUBDOMINIO.workers.dev`.
 2. **Cuenta de Resend**, creada **con la dirección de correo que va a recibir los
    avisos**. Sin dominio verificado, Resend solo permite enviar a la dirección de
-   la propia cuenta; si la cuenta está a nombre de otro correo, los envíos fallarán.
-   Después: `API Keys` → `Create API Key`, permiso *Sending access*. Copia la clave
-   `re_...`, que solo se muestra una vez.
-3. Node.js LTS, Git y Claude Code instalados.
+   la propia cuenta. Después: `API Keys` → `Create API Key`, permiso
+   *Sending access*. Copia la clave `re_...`, que solo se muestra una vez.
+3. **Cuenta de GitHub**, con un repositorio **público** (`SPEC.md` §7.3: es lo
+   que hace que los minutos de Actions sean ilimitados).
+4. Node.js LTS, Git y Claude Code instalados.
 
-## Puesta en marcha
+## 1. El Worker
 
 ```bash
-mkdir zara-restock && cd zara-restock
-git init
-# copiar aquí los ficheros de este paquete
+git clone <tu-repo> && cd zara-restock
 npm install
-npx wrangler login          # abre el navegador, autoriza
-```
-
-Crear la base de datos:
-
-```bash
+npx wrangler login
 npx wrangler d1 create zara-restock
 ```
 
-Devuelve un bloque con un `database_id`. **Pégalo en `wrangler.toml`**, sustituyendo
-`PEGAR_AQUI_EL_ID`.
-
-Aplicar el esquema, en local y en remoto:
+El último comando devuelve un `database_id`. **Pégalo en `wrangler.toml`.**
 
 ```bash
 npm run db:local
 npm run db:remote
-```
 
-Guardar la clave de Resend como secret (no va en ningún fichero del repo):
+npx wrangler secret put RESEND_API_KEY     # la clave re_... de Resend
+npx wrangler secret put CHECKER_TOKEN      # ver abajo
 
-```bash
-npx wrangler secret put RESEND_API_KEY
-# pega la clave cuando la pida
-```
-
-Desarrollo local:
-
-```bash
-npm run dev     # http://localhost:8787
-```
-
-Para probar el envío de correo en local (`wrangler dev` no lee secrets de
-producción), crea un `.dev.vars` en la raíz del proyecto —**nunca se comitea**,
-ya está en `.gitignore`— con:
-
-```
-RESEND_API_KEY=re_...
-```
-
-Desplegar:
-
-```bash
 npx wrangler deploy
 ```
 
-La primera vez pedirá elegir un subdominio `workers.dev`. Al terminar imprime la
-URL pública. **El Worker no tiene cron propio** (`SPEC.md` §7.3): quien habla
-con Zara es `check-local.js`, en tu ordenador, no el Worker desplegado.
-
-Último paso: abrir la URL, guardar el correo de notificación y dar de alta los
-cinco artículos desde la interfaz (quedan en estado `Pendiente` hasta la
-primera ronda de `check-local.js`, `SPEC.md` §3.1).
-
-## Poner en marcha `check-local.js`
-
-Esto no es opcional ni es un plan B: es la única forma de que la aplicación
-funcione. Zara bloquea con un challenge de Akamai cualquier petición que no
-sea un navegador real ejecutando JavaScript (`ZARA-API.md`), así que el Worker
-nunca podrá consultar la disponibilidad por sí mismo.
+Para generar el token del checker (un valor aleatorio largo, no lo inventes a
+mano):
 
 ```bash
-WORKER_URL=https://tu-worker.workers.dev node check-local.js
+node -e "console.log(crypto.randomUUID() + crypto.randomUUID())"
 ```
 
-Necesita un proceso corriendo sin parar (hace su propia ronda cada 120
-segundos internamente; no hace falta cron del sistema para eso). Como tiene
-que estar encendido todo el rato, hay dos formas de tenerlo funcionando:
+Guárdalo: hace falta también en GitHub.
 
-**Opción A — tu propio ordenador.** Lo más simple, con la contrapartida de
-que las comprobaciones se paran mientras el ordenador esté apagado. Deja una
-terminal abierta con el comando de arriba, o prográmalo con el Programador de
-tareas de Windows para que arranque solo al iniciar sesión.
+`wrangler deploy` imprime al final la URL pública. Apúntala.
 
-**Opción B — una VM gratuita que esté siempre encendida** (recomendado si no
-quieres depender de tu ordenador). Con **Oracle Cloud "Always Free"** (gratis
-sin límite de tiempo, a diferencia de AWS/GCP que solo dan 12 meses):
-
-1. Crea una instancia Ampere (`VM.Standard.A1.Flex`, marcada como "Always Free
-   eligible") con imagen Ubuntu, y conéctate por SSH.
-2. Instala Node.js LTS y las librerías que Chromium necesita para arrancar en
-   Linux:
-
-   ```bash
-   curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-   sudo apt-get install -y nodejs \
-     ca-certificates fonts-liberation libasound2t64 libatk-bridge2.0-0 \
-     libatk1.0-0 libcairo2 libcups2 libdbus-1-3 libexpat1 libgbm1 \
-     libglib2.0-0 libgtk-3-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 \
-     libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 \
-     xdg-utils
-   ```
-
-   (Si al arrancar `check-local.js` Chromium se queja de alguna librería que
-   falta, el propio mensaje de error dice cuál — se instala con `apt-get` y
-   listo; los nombres exactos varían algo entre versiones de Ubuntu.)
-
-3. Copia el proyecto entero a la VM (con `git clone` si le has puesto un
-   remoto, o `scp -r`) y ejecuta `npm install` ahí también, para que se
-   descargue Puppeteer con su Chromium.
-4. Copia `check-local.service` a `/etc/systemd/system/check-local.service`.
-   Revisa dentro `User`, `WorkingDirectory` y `WORKER_URL` si no coinciden con
-   tu VM.
-5. Actívalo:
-
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now check-local
-   sudo systemctl status check-local     # debe decir "active (running)"
-   journalctl -u check-local -f          # logs en vivo
-   ```
-
-`Restart=always` en el servicio hace que se reinicie solo si se cae, y
-`WantedBy=multi-user.target` que arranque solo si reinicias la VM.
-
-Sea cual sea la opción, si el proceso deja de correr los artículos se quedan
-congelados en su último estado conocido (no se generan errores ni correos
-falsos): es la contrapartida de que Zara bloquee cualquier petición que no
-sea un navegador real (`SPEC.md` §7.3).
-
-## Comprobar que funciona
-
-```bash
-npx wrangler tail       # logs en vivo del Worker (altas, borrados, resultados recibidos)
-```
-
-Con `check-local.js` corriendo en otra terminal, mira su salida para ver las
-rondas de comprobación.
-
-Para forzar una comprobación sin esperar hasta 120s: botón "Comprobar ahora" de
-la interfaz, o `curl -X POST https://TU-URL/api/check`. Esto solo marca una
-señal; `check-local.js` la recoge en su siguiente vuelta, no es instantáneo
-(`SPEC.md` §4.1).
-
-Prueba del correo de extremo a extremo, según `SPEC.md` §10.6: añade un artículo
-que esté disponible ahora mismo, fuérzalo a agotado en la base de datos y dispara
-una comprobación (con `check-local.js` corriendo).
+Último paso del Worker: abre la URL, guarda el correo de notificación y
+**cambia el PIN de pausa**, que se siembra a `0000`:
 
 ```bash
 npx wrangler d1 execute zara-restock --remote \
-  --command "UPDATE items SET available = 0 WHERE id = 1"
+  --command "UPDATE settings SET value = '1234' WHERE key = 'pause_pin'"
 ```
 
-Debe llegar el correo. Si es la primera vez, mirar también la carpeta de spam y
-marcarlo como correo deseado.
+## 2. El checker — alojamiento A: GitHub Actions
+
+**Pruébalo antes que nada** (`CLAUDE.md`, paso 2 del orden de construcción). Si
+Akamai rechaza las IPs de los runners, este camino no sirve y hay que ir al B.
+
+En el repo de GitHub, `Settings` → `Secrets and variables` → `Actions` → dos
+secrets:
+
+| Nombre | Valor |
+|---|---|
+| `WORKER_URL` | `https://zara-restock.TU-SUBDOMINIO.workers.dev` |
+| `CHECKER_TOKEN` | el mismo valor que pusiste en Cloudflare |
+
+Haz `git push` con `.github/workflows/checker.yml` y ve a la pestaña `Actions`.
+Lanza el workflow a mano con **Run workflow** y mira la salida.
+
+- Si los artículos pasan de `Pendiente` a su estado real, ha funcionado y no
+  necesitas hardware.
+- Si el log muestra el challenge de Akamai, un captcha o un HTML sin
+  `viewPayload`, ve al alojamiento B.
+
+**GitHub desactiva los workflows programados de un repositorio público tras 60
+días sin actividad.** Lo avisa por correo. Un commit trivial lo reactiva; si te
+molesta, ponlo en el calendario cada dos meses.
+
+## 3. El checker — alojamiento B: ordenador propio
+
+Solo si el A ha fallado, o si prefieres no depender de GitHub.
+
+Preparación del portátil (Asus F555LA o equivalente):
+
+1. **Cambia el HDD por un SSD; no particiones el disco original.** El HDD sale
+   entero y se guarda en un cajón: los datos que hubiera quedan intactos y el
+   cambio es reversible en cinco minutos. De paso desaparece la lentitud, que
+   venía del disco a 5400 rpm, no del procesador.
+2. Instala **Ubuntu Server 24.04 LTS** (sin escritorio) y habilita SSH.
+3. Revisa que la batería no esté hinchada si va a quedarse enchufado 24/7. Si lo
+   está, se retira; el portátil funciona solo con el cargador.
+4. Que no se suspenda al cerrar la tapa: en `/etc/systemd/logind.conf`,
+   `HandleLidSwitchExternalPower=ignore`, y `systemctl restart systemd-logind`.
+
+Instalación:
+
+```bash
+sudo apt update && sudo apt install -y nodejs npm git chromium-browser
+git clone <tu-repo> && cd zara-restock && npm install
+```
+
+Las credenciales en un `.env` **fuera del repo** (`chmod 600`), con `WORKER_URL`
+y `CHECKER_TOKEN`.
+
+Prueba una ronda a mano antes de automatizar:
+
+```bash
+node checker.js
+```
+
+Y después, `checker.timer` + `checker.service` con `OnUnitActiveSec=5min`:
+
+```bash
+sudo cp checker.service checker.timer /etc/systemd/system/
+sudo systemctl enable --now checker.timer
+systemctl list-timers checker.timer      # comprobar el próximo disparo
+journalctl -u checker.service -f         # logs
+```
+
+En este alojamiento el intervalo ya no lo limita GitHub: puedes bajarlo a 2
+minutos si quieres. La ventana horaria la sigue calculando el Worker, así que no
+hay nada que cambiar por ese lado.
+
+Consumo estimado: unos 12 W continuos, en torno a 20 €/año.
 
 ---
 
 # Runbook
 
-## Cambiar el intervalo de comprobación
+## Pausar la aplicación
 
-Editar la línea `crons` de `wrangler.toml` y `npx wrangler deploy`.
+Botón `Pausar` de la interfaz, que pide el PIN. Con `paused = 1`, `checker.js`
+sale sin abrir Puppeteer. Los runners de GitHub siguen arrancando y terminando
+en segundos: es gratis y no toca Zara.
+
+## Cambiar la ventana horaria
+
+Constantes `VENTANA_INICIO` / `VENTANA_FIN` en el código del Worker, y
+`wrangler deploy`. Si la mueves mucho, ajusta también el rango de horas del cron
+en `.github/workflows/checker.yml`, que es un superconjunto en UTC. **No pongas
+la lógica de horarios en el workflow**: ahí solo hay una optimización, la
+decisión la toma el Worker.
 
 ## Cambiar la dirección de notificación
 
-Desde la interfaz. Pero recuerda: **tiene que seguir siendo la dirección de la
-cuenta de Resend**, o los envíos fallarán silenciosamente para la aplicación
-(se verán como error en la respuesta de la API).
-
-Para enviar a varias direcciones hace falta verificar un dominio propio en Resend
-(unos 10 €/año en Cloudflare Registrar). No requiere cambios en la aplicación más
-allá del remitente en `src/mail.js`.
+Desde la interfaz. Tiene que seguir siendo la dirección de la cuenta de Resend, o
+los envíos fallarán. Para varias direcciones hace falta un dominio propio
+verificado (~10 €/año), sin cambios en la aplicación más allá del remitente.
 
 ## Dejan de llegar avisos
 
-Mirar la columna Estado del listado. Casos:
+En orden, de lo más barato a lo más caro:
 
-- **Todo en `Pendiente`** → `check-local.js` no está corriendo, o no consigue
-  llegar al Worker. Revisar la terminal donde corre el script.
-- **Todos en `Error`** → Zara ha cambiado algo, o el challenge de Akamai ha
-  cambiado de forma. Ver el mensaje de error en la fila y, si hace falta,
-  repetir el paso 0 (`SPEC.md` §7.1) para actualizar `ZARA-API.md`.
-- **Estados correctos pero sin correo** → problema de Resend. Revisar el panel de
-  Resend (registro de envíos) y que la clave sea válida. Comprobar spam.
-- **Un solo artículo en `Error`** → el artículo probablemente ya no existe en el
-  catálogo, o la talla no existe (revisar el mensaje: incluye la lista de
-  tallas válidas). Borrarlo o corregirlo.
+1. **¿Está en pausa o fuera de horario?** Banda de estado de la interfaz.
+2. **¿Se están ejecutando los workflows?** Pestaña `Actions`. Si llevan 60 días
+   parados, GitHub los ha desactivado por inactividad.
+3. **Columna Estado del listado.** Si todos están en `Error` con un challenge de
+   Akamai, el problema es el alojamiento: pasa del A al B. Si es un solo
+   artículo, probablemente ya no exista en el catálogo; bórralo.
+4. **Estados correctos pero sin correo:** panel de Resend (registro de envíos),
+   validez de la clave, y la carpeta de spam.
+5. **Solo entonces**, `ZARA-API.md` y `src/zara-fetch.js`: Zara habrá cambiado
+   algo. El resto de la aplicación no se toca.
 
-Ante un cambio de Zara, el fichero a tocar es `src/zara.js`, guiándose por
-`ZARA-API.md`. El resto de la aplicación no se toca.
+## Rotar el token del checker
+
+`npx wrangler secret put CHECKER_TOKEN` y actualizar el secret homónimo en
+GitHub. Si solo cambias uno de los dos, `/api/check-results` devolverá 401 y
+todos los artículos se quedarán con su último estado conocido.
 
 ## Añadir otra tienda
 

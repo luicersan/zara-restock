@@ -1,0 +1,16 @@
+# Una ronda de checker.js y termina (Type=oneshot): la periodicidad la pone
+# checker.timer, no este fichero. Revisa User, WorkingDirectory y la ruta de
+# EnvironmentFile antes de instalarlo — ver DESPLIEGUE.md, alojamiento B.
+
+[Unit]
+Description=zara-restock: una ronda de comprobacion de disponibilidad en Zara
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/zara-restock
+# .env fuera del repo (chmod 600), con WORKER_URL y CHECKER_TOKEN.
+EnvironmentFile=/home/ubuntu/zara-restock/.env
+ExecStart=/usr/bin/node checker.js

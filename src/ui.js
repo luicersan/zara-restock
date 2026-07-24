@@ -36,6 +36,7 @@ export function renderUI() {
   .error { color: #c0392b; margin-top: 0.5rem; }
   .warning { color: #a15c00; margin-top: 0.5rem; }
   .ok { color: #1e7d34; margin-top: 0.5rem; }
+  .aviso { font-size: 0.85rem; color: #666; margin: 0.5rem 0 0; }
   table { border-collapse: collapse; width: 100%; margin-top: 0.75rem; }
   th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #8883; font-size: 0.9rem; }
   .estado-disponible { color: #1e7d34; font-weight: bold; }
@@ -44,10 +45,31 @@ export function renderUI() {
   .estado-error { color: #c0392b; font-weight: bold; }
   .tabla-envoltorio { overflow-x: auto; }
   .fila-error-msg { font-size: 0.8rem; color: #c0392b; }
+  .banda {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 1rem;
+    border-radius: 8px;
+    margin-bottom: 1.5rem;
+    font-size: 0.9rem;
+    border: 1px solid #8883;
+  }
+  .banda-activo { background: color-mix(in srgb, #1e7d34 15%, transparent); }
+  .banda-pausado { background: color-mix(in srgb, #a15c00 15%, transparent); }
+  .banda-fuera { background: color-mix(in srgb, #888 15%, transparent); }
 </style>
 </head>
 <body>
   <h1>Avisador de reposiciones de Zara</h1>
+
+  <div id="banda-estado" class="banda">
+    <span id="banda-texto">Cargando estado…</span>
+    <button id="boton-pausa" type="button">Pausar</button>
+  </div>
+  <div id="estado-mensaje"></div>
 
   <section id="seccion-alta">
     <h2>Añadir artículo</h2>
@@ -60,13 +82,12 @@ export function renderUI() {
       </label>
       <button type="submit">Añadir</button>
     </form>
+    <p class="aviso">Los artículos nuevos quedan como <strong>Pendiente</strong> hasta la próxima ronda de comprobación (unos 5 minutos; si se añaden de noche, hasta las 08:00).</p>
     <div id="alta-mensaje"></div>
   </section>
 
   <section id="seccion-listado">
     <h2>Artículos vigilados</h2>
-    <button id="boton-comprobar">Comprobar ahora</button>
-    <div id="comprobar-mensaje"></div>
     <div class="tabla-envoltorio">
       <table>
         <thead>
@@ -119,6 +140,54 @@ function mostrarMensaje(elementoId, texto, clase) {
   el.textContent = texto;
   el.className = clase || "";
 }
+
+async function cargarEstado() {
+  const respuesta = await fetch("/api/status");
+  const datos = await respuesta.json();
+
+  const banda = document.getElementById("banda-estado");
+  const texto = document.getElementById("banda-texto");
+  const boton = document.getElementById("boton-pausa");
+
+  banda.classList.remove("banda-activo", "banda-pausado", "banda-fuera");
+
+  if (datos.paused) {
+    texto.textContent = "En pausa";
+    banda.classList.add("banda-pausado");
+    boton.textContent = "Reanudar";
+  } else if (!datos.dentro_de_ventana) {
+    texto.textContent = "Fuera de horario (activo de 08:00 a 23:00)";
+    banda.classList.add("banda-fuera");
+    boton.textContent = "Pausar";
+  } else {
+    texto.textContent = "Activo";
+    banda.classList.add("banda-activo");
+    boton.textContent = "Pausar";
+  }
+
+  return datos;
+}
+
+document.getElementById("boton-pausa").addEventListener("click", async () => {
+  mostrarMensaje("estado-mensaje", "");
+  const estadoActual = await cargarEstado();
+  const quierePausar = !estadoActual.paused;
+  const pin = prompt(quierePausar ? "PIN para pausar:" : "PIN para reanudar:");
+  if (pin === null) return;
+
+  const respuesta = await fetch("/api/pause", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paused: quierePausar, pin }),
+  });
+  const datos = await respuesta.json();
+
+  if (!respuesta.ok) {
+    mostrarMensaje("estado-mensaje", datos.error || "No se ha podido cambiar el estado.", "error");
+    return;
+  }
+  await cargarEstado();
+});
 
 async function cargarItems() {
   const respuesta = await fetch("/api/items");
@@ -216,11 +285,6 @@ document.getElementById("form-alta").addEventListener("submit", async (evento) =
   await cargarItems();
 });
 
-document.getElementById("boton-comprobar").addEventListener("click", async () => {
-  await fetch("/api/check", { method: "POST" });
-  mostrarMensaje("comprobar-mensaje", "Comprobación solicitada: se hará en cuanto el proceso local la recoja.", "ok");
-});
-
 document.getElementById("form-ajustes").addEventListener("submit", async (evento) => {
   evento.preventDefault();
   mostrarMensaje("ajustes-mensaje", "");
@@ -240,6 +304,7 @@ document.getElementById("form-ajustes").addEventListener("submit", async (evento
   mostrarMensaje("ajustes-mensaje", email ? "Guardado." : "Guardado. Sin dirección configurada, no se enviarán avisos.", "ok");
 });
 
+cargarEstado();
 cargarItems();
 cargarAjustes();
 </script>
