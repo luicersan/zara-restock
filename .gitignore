@@ -2,3 +2,4 @@ node_modules/
 resend_apikey.txt
 .wrangler/
 .dev.vars
+.claude/settings.local.json
