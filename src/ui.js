@@ -213,6 +213,24 @@ export function renderUI() {
   .banda-pausado { background: color-mix(in srgb, var(--color-arena) 35%, var(--superficie)); }
   .banda-fuera { background: color-mix(in srgb, var(--texto-tenue) 15%, var(--superficie)); }
 
+  /* La última comprobación no depende de la tienda: cada ronda las mira todas,
+     así que va en un bloque propio en vez de en una columna por tabla. */
+  .info-comprobacion {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem;
+    padding: 0.65rem 1rem;
+    margin-bottom: 1.5rem;
+    border: 1px solid var(--borde);
+    border-radius: 12px;
+    background: var(--superficie);
+    box-shadow: var(--sombra);
+    font-size: 0.9rem;
+  }
+  .info-etiqueta { color: var(--texto-tenue); }
+  .info-valor { font-weight: 600; }
+
   @media (max-width: 480px) {
     form button[type="submit"] { flex: 1 1 100%; }
   }
@@ -231,6 +249,11 @@ export function renderUI() {
       <button id="boton-pausa" type="button" class="btn-pausa">Pausar</button>
     </div>
     <div id="estado-mensaje"></div>
+
+    <div class="info-comprobacion">
+      <span class="info-etiqueta">Última comprobación:</span>
+      <span id="ultima-comprobacion" class="info-valor">Cargando…</span>
+    </div>
 
     <section id="tarjeta-zara" class="tarjeta tarjeta-zara">
       <h2><span class="punto punto-zara"></span>Zara</h2>
@@ -314,6 +337,15 @@ const ESTADO_TEXTO = {
   pendiente: "Pendiente",
   error: "Error",
 };
+
+// Las fechas llegan en ISO 8601 UTC y solo se pasan a Europe/Madrid al pintar.
+const FORMATO_FECHA = new Intl.DateTimeFormat("es-ES", {
+  timeZone: "Europe/Madrid",
+  day: "2-digit",
+  month: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
 function mostrarMensaje(elementoId, texto, clase) {
   const el = document.getElementById(elementoId);
@@ -411,7 +443,7 @@ function renderTabla(tbodyId, items) {
     const botonBorrar = document.createElement("button");
     botonBorrar.className = "btn-secundario";
     botonBorrar.textContent = "Borrar";
-    botonBorrar.addEventListener("click", () => borrarItem(item.id));
+    botonBorrar.addEventListener("click", () => borrarItem(item.id, item.name || item.url));
     celdaBorrar.appendChild(botonBorrar);
     fila.appendChild(celdaBorrar);
 
@@ -419,14 +451,31 @@ function renderTabla(tbodyId, items) {
   }
 }
 
+// Cada ronda comprueba todos los artículos a la vez, así que la fecha buena es
+// la más reciente de la lista: las demás son de artículos dados de alta después.
+function renderUltimaComprobacion(items) {
+  const fechas = items.map((item) => item.lastCheckedAt).filter(Boolean);
+  const el = document.getElementById("ultima-comprobacion");
+
+  if (fechas.length === 0) {
+    el.textContent = "Todavía sin comprobar";
+    return;
+  }
+
+  const masReciente = fechas.reduce((a, b) => (a > b ? a : b));
+  el.textContent = FORMATO_FECHA.format(new Date(masReciente));
+}
+
 async function cargarItems() {
   const respuesta = await fetch("/api/items");
   const datos = await respuesta.json();
   renderTabla("tabla-zara-cuerpo", datos.items.filter((item) => item.store === "zara"));
   renderTabla("tabla-bershka-cuerpo", datos.items.filter((item) => item.store === "bershka"));
+  renderUltimaComprobacion(datos.items);
 }
 
-async function borrarItem(id) {
+async function borrarItem(id, nombre) {
+  if (!confirm("¿Seguro que quieres borrar el artículo " + nombre + "?")) return;
   await fetch("/api/items/" + id, { method: "DELETE" });
   await cargarItems();
 }
