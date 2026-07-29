@@ -3,3 +3,5 @@ resend_apikey.txt
 .wrangler/
 .dev.vars
 .claude/settings.local.json
+*.log
+.env
