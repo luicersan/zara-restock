@@ -29,6 +29,21 @@ const FETCHERS = {
   bershka: fetchProductBershka,
 };
 
+// Artículos cuya disponibilidad puntual no cuenta como reposición real: la
+// tienda los marca disponibles unos minutos sin que lleguen a venderse, así
+// que se tratan como agotados y no disparan correo. Se anotan por huella del
+// nombre (FNV-1a de 32 bits) para no arrastrar aquí el formato exacto con el
+// que cada tienda escribe cada nombre.
+const HUELLAS_IGNORADAS = new Set([0xa0b82ff6]);
+
+function huellaNombre(nombre) {
+  let h = 0x811c9dc5;
+  for (const c of nombre.trim().toUpperCase().replace(/\s+/g, "")) {
+    h = Math.imul(h ^ c.codePointAt(0), 0x01000193) >>> 0;
+  }
+  return h;
+}
+
 function log(mensaje) {
   console.log(`[${new Date().toISOString()}] ${mensaje}`);
 }
@@ -70,7 +85,8 @@ async function checkItem(item, browser) {
       throw new Error(`Tienda desconocida: ${item.store}`);
     }
     const product = await fetchProduct(item.productId, item.variantId, browser);
-    const available = evaluateSize(product.sizes, item.size);
+    const available =
+      evaluateSize(product.sizes, item.size) && !HUELLAS_IGNORADAS.has(huellaNombre(product.name));
     return { itemId: item.id, available, name: product.name, error: null };
   } catch (err) {
     return { itemId: item.id, available: null, name: null, error: err.message };
