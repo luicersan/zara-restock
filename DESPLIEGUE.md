@@ -116,10 +116,12 @@ sudo apt update && sudo apt install -y nodejs npm
 Puppeteer descarga su propio Chromium con `npm install` (no hace falta el
 paquete `chromium-browser`: en 24.04 es un envoltorio de snap, y lo único que
 falta de verdad son las bibliotecas compartidas que Chromium headless necesita
-para arrancar en un servidor sin entorno gráfico):
+para arrancar en un servidor sin entorno gráfico). Ese `npm install` también
+necesita `unzip` para extraer el Chromium descargado — un Ubuntu Server mínimo
+no lo trae, y sin él falla con "no zip archiver is available":
 
 ```bash
-sudo apt install -y ca-certificates fonts-liberation libasound2t64 \
+sudo apt install -y unzip ca-certificates fonts-liberation libasound2t64 \
   libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libgbm1 libgtk-3-0 \
   libnspr4 libnss3 libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 \
   libxrandr2 xdg-utils
