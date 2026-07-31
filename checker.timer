@@ -3,11 +3,11 @@
 # OnUnitActiveSec si se quiere (DESPLIEGUE.md, alojamiento B).
 
 [Unit]
-Description=Lanza checker.service cada 5 minutos
+Description=Lanza checker.service cada 2 minutos
 
 [Timer]
 OnBootSec=1min
-OnUnitActiveSec=5min
+OnUnitActiveSec=2min
 Unit=checker.service
 
 [Install]
