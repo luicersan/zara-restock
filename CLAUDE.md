@@ -69,10 +69,7 @@ Si dudas entre dos soluciones, elige la que tenga menos ficheros.
 │   └── checker.yml    cron horario + bucle de 10 rondas de 5 min dentro del
 │                      job (alojamiento A). El */5 no funciona: ver abajo
 ├── checker.timer      \ unidades systemd para el alojamiento B
-├── checker.service    /  (ordenador propio). Ver DESPLIEGUE.md
-├── checker-mac.sh     \ lo mismo para un Mac, que no tiene systemd:
-├── local.zara-restock.checker.plist
-│                      /  launchd + envoltorio. Ver DESPLIEGUE.md
+├── checker.service    /  (ordenador propio, Ubuntu Server). Ver DESPLIEGUE.md
 ├── src/
 │   ├── index.js       fetch() + enrutado. SIN scheduled(): no hay cron de
 │   │                  Worker (SPEC.md §7.3)

@@ -9,8 +9,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=ubuntu
-WorkingDirectory=/home/ubuntu/zara-restock
-# .env fuera del repo (chmod 600), con WORKER_URL y CHECKER_TOKEN.
-EnvironmentFile=/home/ubuntu/zara-restock/.env
+User=homeserver
+WorkingDirectory=/home/homeserver/zara-restock
+# .env dentro del clon pero en .gitignore (chmod 600), con WORKER_URL y CHECKER_TOKEN.
+EnvironmentFile=/home/homeserver/zara-restock/.env
 ExecStart=/usr/bin/node checker.js

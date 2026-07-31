@@ -96,37 +96,46 @@ revertido el workflow.
 `Run workflow` a mano hace **una sola ronda** y termina en un minuto, para que
 siga sirviendo como comprobación inmediata.
 
-## 3. El checker — alojamiento B: ordenador propio
+## 3. El checker — alojamiento B: ordenador propio (Ubuntu Server)
 
-Solo si el A ha fallado, o si prefieres no depender de GitHub.
+Solo si el A ha fallado, o si prefieres no depender de GitHub. `checker.js` no
+cambia respecto al A: es de un solo disparo y sin estado (`SPEC.md` §7.3). Lo
+único que cambia es quién lo lanza y cada cuánto.
 
-`checker.js` no cambia en ninguno de los dos sistemas de abajo: es de un solo
-disparo y sin estado (`SPEC.md` §7.3). Lo único que cambia es quién lo lanza y
-cada cuánto, así que **no hace falta una rama aparte** para correrlo en local.
-
-### Linux (Ubuntu Server + systemd)
-
-Preparación del portátil (Asus F555LA o equivalente):
-
-1. **Cambia el HDD por un SSD; no particiones el disco original.** El HDD sale
-   entero y se guarda en un cajón: los datos que hubiera quedan intactos y el
-   cambio es reversible en cinco minutos. De paso desaparece la lentitud, que
-   venía del disco a 5400 rpm, no del procesador.
-2. Instala **Ubuntu Server 24.04 LTS** (sin escritorio) y habilita SSH.
-3. Revisa que la batería no esté hinchada si va a quedarse enchufado 24/7. Si lo
-   está, se retira; el portátil funciona solo con el cargador.
-4. Que no se suspenda al cerrar la tapa: en `/etc/systemd/logind.conf`,
-   `HandleLidSwitchExternalPower=ignore`, y `systemctl restart systemd-logind`.
-
-Instalación:
+Este alojamiento ya está montado en un Asus F555LA con Ubuntu Server 24.04 LTS
+(hostname `homeserver`, usuario `homeserver`, IP fija `192.168.1.60` por WiFi,
+suspensión al cerrar la tapa desactivada, SSH activo). Accede con
+`ssh homeserver@192.168.1.60`. El repo ya está clonado ahí vía SSH a GitHub; lo
+que falta es Node.js, las dependencias de sistema que Puppeteer necesita, y las
+unidades de systemd.
 
 ```bash
-sudo apt update && sudo apt install -y nodejs npm git chromium-browser
-git clone <tu-repo> && cd zara-restock && npm install
+sudo apt update && sudo apt install -y nodejs npm
 ```
 
-Las credenciales en un `.env` **fuera del repo** (`chmod 600`), con `WORKER_URL`
-y `CHECKER_TOKEN`.
+Puppeteer descarga su propio Chromium con `npm install` (no hace falta el
+paquete `chromium-browser`: en 24.04 es un envoltorio de snap, y lo único que
+falta de verdad son las bibliotecas compartidas que Chromium headless necesita
+para arrancar en un servidor sin entorno gráfico):
+
+```bash
+sudo apt install -y ca-certificates fonts-liberation libasound2t64 \
+  libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libgbm1 libgtk-3-0 \
+  libnspr4 libnss3 libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 \
+  libxrandr2 xdg-utils
+```
+
+```bash
+cd ~/zara-restock && npm install
+```
+
+Las credenciales en un `.env` dentro del repo (está en `.gitignore`, así que no
+se sube), con `WORKER_URL` y `CHECKER_TOKEN`:
+
+```bash
+printf 'WORKER_URL=https://...\nCHECKER_TOKEN=...\n' > ~/zara-restock/.env
+chmod 600 ~/zara-restock/.env
+```
 
 Prueba una ronda a mano antes de automatizar:
 
@@ -134,7 +143,9 @@ Prueba una ronda a mano antes de automatizar:
 node checker.js
 ```
 
-Y después, `checker.timer` + `checker.service` con `OnUnitActiveSec=5min`:
+Y después, `checker.timer` + `checker.service` (ya apuntan a `User=homeserver`
+y `WorkingDirectory=/home/homeserver/zara-restock`; revísalos si el usuario o
+la ruta del clon son distintos) con `OnUnitActiveSec=5min`:
 
 ```bash
 sudo cp checker.service checker.timer /etc/systemd/system/
@@ -144,70 +155,10 @@ journalctl -u checker.service -f         # logs
 ```
 
 En este alojamiento el intervalo ya no lo limita GitHub: puedes bajarlo a 2
-minutos si quieres. La ventana horaria la sigue calculando el Worker, así que no
-hay nada que cambiar por ese lado.
+minutos si quieres, cambiando `OnUnitActiveSec`. La ventana horaria la sigue
+calculando el Worker, así que no hay nada que cambiar por ese lado.
 
 Consumo estimado: unos 12 W continuos, en torno a 20 €/año.
-
-### macOS (launchd)
-
-macOS no tiene systemd, así que `checker.service` y `checker.timer` no sirven
-ahí. El equivalente son `local.zara-restock.checker.plist` (launchd) y
-`checker-mac.sh`, que hace lo que en systemd hacían `EnvironmentFile` y
-`WorkingDirectory`.
-
-```bash
-brew install node git
-git clone <tu-repo> ~/zara-restock && cd ~/zara-restock && npm install
-
-# Credenciales FUERA del repo, que es público
-printf 'WORKER_URL=https://...\nCHECKER_TOKEN=...\n' > ~/.zara-restock.env
-chmod 600 ~/.zara-restock.env
-
-chmod +x checker-mac.sh
-./checker-mac.sh                  # una ronda a mano antes de automatizar
-```
-
-Después, edita `local.zara-restock.checker.plist` y sustituye `USUARIO` por el
-nombre de usuario real: launchd exige rutas absolutas y no admite `~`.
-
-```bash
-cp local.zara-restock.checker.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/local.zara-restock.checker.plist
-launchctl list | grep zara-restock         # debe aparecer cargado
-tail -f ~/Library/Logs/zara-restock.log    # logs
-```
-
-**Para cambiar el intervalo**, edita `StartInterval` (en segundos) y recarga:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/local.zara-restock.checker.plist
-launchctl load ~/Library/LaunchAgents/local.zara-restock.checker.plist
-```
-
-#### Por qué 180 segundos y no 120
-
-Medido en este proyecto: cada ficha tarda ~5 s (4 de ellos son la espera fija de
-`src/zara-fetch.js`), así que una ronda de 10 artículos son **~55 s**. Con 180 s
-el checker está parado dos tercios del tiempo y queda margen para que una ronda
-se alargue o para añadir artículos (cada uno son +5 s; a 3 minutos caben unos
-30). Con 120 s la ronda ocuparía la mitad del intervalo, y cualquier lentitud
-haría que launchd fuese difiriendo disparos —no solapa ejecuciones—, con lo que
-la cadencia real dejaría de ser la configurada.
-
-No hay ningún umbral publicado de Akamai, así que "seguro" no es un número que
-se pueda calcular. El criterio es no bajar del doble de lo que dura una ronda:
-con 180 s son unas 200 cargas de página por hora, frente a las ~120 de una
-cadencia de 5 minutos. La ventana horaria la sigue calculando el Worker, así que
-el tráfico nocturno no aumenta.
-
-Un `LaunchAgent` (en `~/Library/LaunchAgents`) corre con la sesión del usuario
-iniciada, que es lo normal en un portátil personal. Si hiciera falta que
-corriese sin sesión abierta, sería un `LaunchDaemon` en `/Library/LaunchDaemons`
-instalado con `sudo`.
-
-El log no rota solo: son unas 12 líneas por ronda, del orden de 3 MB al mes.
-Vaciarlo de vez en cuando con `: > ~/Library/Logs/zara-restock.log` basta.
 
 ---
 
